@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from video_tagging_assistant.compressor import compress_video
 from video_tagging_assistant.context_builder import build_prompt_context
-from video_tagging_assistant.review_exporter import export_review_list
+from video_tagging_assistant.review_exporter import export_html_report, export_review_list
 from video_tagging_assistant.scanner import scan_videos
 
 
@@ -57,6 +57,8 @@ def run_batch(config: Dict, compressor=compress_video, provider=None) -> Dict[st
     output_dir = Path(config["output_dir"])
     paths = config.get("paths", {})
     concurrency = config.get("concurrency", {})
+    logging_config = config.get("logging", {})
+    reporting_config = config.get("reporting", {})
     compressed_dir = Path(paths.get("compressed_dir", str(output_dir / "compressed")))
     intermediate_dir = Path(paths.get("intermediate_dir", str(output_dir / "intermediate")))
     review_path = Path(paths.get("review_file", str(output_dir / "review" / "review.txt")))
@@ -66,7 +68,15 @@ def run_batch(config: Dict, compressor=compress_video, provider=None) -> Dict[st
     tasks = scan_videos(input_dir)
     compression_workers = concurrency.get("compression_workers", 1)
     provider_workers = concurrency.get("provider_workers", 1)
-    artifacts = _compress_tasks(tasks, compressed_dir, config["compression"], compressor, compression_workers)
+    compression_config = dict(config["compression"])
+    compression_config["logging"] = logging_config
+
+    if not logging_config.get("quiet_terminal", False):
+        print(f"Found {len(tasks)} videos")
+        print(f"Compression workers: {compression_workers}")
+        print(f"Provider workers: {provider_workers}")
+
+    artifacts = _compress_tasks(tasks, compressed_dir, compression_config, compressor, compression_workers)
     results = []
 
     with ThreadPoolExecutor(max_workers=max(1, provider_workers)) as executor:
@@ -86,6 +96,26 @@ def run_batch(config: Dict, compressor=compress_video, provider=None) -> Dict[st
                 json.dumps(asdict(result), ensure_ascii=False, indent=2, default=_json_default),
                 encoding="utf-8",
             )
+            if not logging_config.get("quiet_terminal", False):
+                print(f"完成: {task.file_name}")
 
     export_review_list(results, review_path)
-    return {"processed": len(results), "review_path": str(review_path)}
+
+    html_report_path = None
+    if reporting_config.get("generate_html_report", False):
+        html_report_path = Path(reporting_config["html_report_file"])
+        export_html_report(results, html_report_path)
+
+    print(f"Processed {len(results)} videos")
+    print(f"Review list: {review_path}")
+    if html_report_path:
+        print(f"HTML report: {html_report_path}")
+    log_dir = logging_config.get("log_dir")
+    if log_dir:
+        print(f"Logs: {log_dir}")
+
+    return {
+        "processed": len(results),
+        "review_path": str(review_path),
+        "html_report_path": str(html_report_path) if html_report_path else "",
+    }

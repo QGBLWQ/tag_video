@@ -36,3 +36,48 @@ def export_review_list(results: List[GenerationResult], output_path: Path) -> No
         )
 
     output_path.write_text("\n\n---\n\n".join(sections) + "\n", encoding="utf-8")
+
+
+def export_html_report(results: List[GenerationResult], output_path: Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    items = []
+    for result in results:
+        items.append(
+            f"""
+            <div class='item'>
+              <h2>{result.source_video_path.as_posix()}</h2>
+              <p><strong>安装方式</strong>: {result.structured_tags.get('安装方式', '')}</p>
+              <p><strong>运动模式</strong>: {result.structured_tags.get('运动模式', '')}</p>
+              <p><strong>运镜方式</strong>: {result.structured_tags.get('运镜方式', '')}</p>
+              <p><strong>光源</strong>: {result.structured_tags.get('光源', '')}</p>
+              <p><strong>画面特征</strong>: {', '.join(result.multi_select_tags.get('画面特征', []))}</p>
+              <p><strong>影像表达</strong>: {', '.join(result.multi_select_tags.get('影像表达', []))}</p>
+              <p><strong>画面描述</strong>: {result.scene_description}</p>
+              <p><strong>审核状态</strong>: {result.review_status}</p>
+              <p><strong>模型</strong>: {result.provider}/{result.model}</p>
+            </div>
+            """
+        )
+
+    html = f"""
+    <html>
+      <head>
+        <meta charset='utf-8'>
+        <title>Video Tagging Report</title>
+        <style>
+          body {{ font-family: Arial, sans-serif; margin: 24px; }}
+          .item {{ border: 1px solid #ddd; padding: 16px; margin-bottom: 16px; border-radius: 8px; }}
+          h1, h2 {{ margin-top: 0; }}
+        </style>
+      </head>
+      <body>
+        <h1>视频打标汇总报告</h1>
+        <p>总视频数: {len(results)}</p>
+        <p>成功数: {len(results)}</p>
+        {''.join(items)}
+      </body>
+    </html>
+    """
+    output_path.write_text(html, encoding="utf-8")
