@@ -1,0 +1,1 @@
+adb shell ls /mnt/nvme/CapturedData > ./rk_raw_case_list.txt"
