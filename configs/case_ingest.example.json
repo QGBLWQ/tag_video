@@ -1,0 +1,7 @@
+{
+  "pull_bat": "../20260422_pull.bat",
+  "move_bat": "../20260422_move.bat",
+  "server_root": "../deployment_package/case_uploads",
+  "date": "20260428",
+  "skip_upload": false
+}
