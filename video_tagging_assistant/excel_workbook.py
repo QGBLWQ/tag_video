@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -248,6 +248,86 @@ def build_case_manifests(
     return manifests
 
 
+def get_next_case_sequence(workbook_path: Path, pc_id: str) -> int:
+    """Read 「创建记录」 and return the next available sequence number for pc_id.
+
+    Returns 1 if sheet doesn't exist or has no matching rows.
+    """
+    if not workbook_path.exists():
+        return 1
+    workbook = load_workbook(workbook_path, data_only=True)
+    if "创建记录" not in workbook.sheetnames:
+        return 1
+    sheet = workbook["创建记录"]
+    headers = _header_map(sheet)
+    if "文件夹名" not in headers:
+        return 1
+    prefix = f"case_{pc_id}_"
+    max_seq = 0
+    for row_index in range(2, sheet.max_row + 1):
+        case_id = str(sheet.cell(row_index, headers["文件夹名"]).value or "").strip()
+        if case_id.startswith(prefix):
+            try:
+                seq = int(case_id[len(prefix):])
+                if seq > max_seq:
+                    max_seq = seq
+            except ValueError:
+                pass
+    return max_seq + 1
+
+
+def load_get_list_manifests(
+    workbook_path: Path,
+    source_sheet: str,
+    pc_id: str,
+    dji_nomal_dir: Path,
+    dji_night_dir: Path,
+    local_root: Path,
+    server_root: Path,
+    mode: str,
+    starting_sequence: int = 1,
+) -> List[CaseManifest]:
+    """Read 「获取列表」 only and build CaseManifest objects.
+
+    Does NOT require 「创建记录」 to exist. case_id is derived as case_{pc_id}_{seq:04d}.
+    Designed for the tagging tab where 「创建记录」 is populated only after review approval.
+    """
+    workbook = load_workbook(workbook_path, data_only=True)
+    sheet = workbook[source_sheet]
+    created_date = str(sheet.cell(1, 2).value or "").strip()
+    headers = _header_map_for_row(sheet, 2)
+    missing = GET_LIST_REQUIRED_HEADERS - set(headers)
+    if missing:
+        raise ValueError(f"获取列表 缺少必要表头: {sorted(missing)}")
+
+    manifests: List[CaseManifest] = []
+    sequence = starting_sequence
+    for row_index in range(3, sheet.max_row + 1):
+        rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
+        normal = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
+        night = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
+        if not rk_raw and not normal and not night:
+            continue
+        case_id = f"case_{pc_id}_{sequence:04d}"
+        manifests.append(
+            CaseManifest(
+                case_id=case_id,
+                row_index=row_index,
+                created_date=created_date,
+                mode=mode,
+                raw_path=Path(rk_raw),
+                vs_normal_path=Path(dji_nomal_dir) / normal if normal else Path(normal),
+                vs_night_path=Path(dji_night_dir) / night if night else Path(night),
+                local_case_root=Path(local_root) / mode / created_date / case_id,
+                server_case_dir=Path(server_root) / mode / created_date / case_id,
+                remark="",
+                labels={},
+            )
+        )
+        sequence += 1
+    return manifests
+
+
 def load_confirmed_cases(
     workbook_path: Path,
     source_sheet: str,
@@ -378,32 +458,94 @@ class TagResult:
     image_feature: str     # 画面特征（从 AI 多选中人工选一）
     image_expression: str  # 影像表达（从 AI 多选中人工选一）
     review_status: str     # 固定值 "审核通过"
+    scene_description: str = ""                          # 画面描述（写入备注列）
+    device_info: Dict[str, str] = field(default_factory=dict)  # 设备编号/芯片等
 
 
-def write_tag_result_to_create_record(
+_CREATE_RECORD_HEADERS = [
+    "序号", "文件夹名", "备注", "创建日期", "Null", "数量",
+    "安装方式", "运动模式", "运镜元素", "光源划分", "画面特征", "影像表达",
+    "Raw存放路径", "设备编号", "模组型号", "芯片", "采集模式", "bit位", "帧率", "其他信息",
+    "VS_Nomal", "VS_Night",
+]
+
+
+def load_dut_info(workbook_path: Path) -> List[Dict[str, str]]:
+    """Read Dut_info sheet. Returns list of device dicts; default device (默认选项=是) first."""
+    workbook = load_workbook(workbook_path, data_only=True)
+    if "Dut_info" not in workbook.sheetnames:
+        return []
+    sheet = workbook["Dut_info"]
+    headers = _header_map(sheet)
+    dut_fields = ["设备编号", "模组型号", "芯片", "采集模式", "bit位", "帧率", "其他信息"]
+    devices: List[Dict[str, str]] = []
+    default_device = None
+    for row_index in range(2, sheet.max_row + 1):
+        device_id_col = headers.get("设备编号", 2)
+        device_id = str(sheet.cell(row_index, device_id_col).value or "").strip()
+        if not device_id:
+            continue
+        device: Dict[str, str] = {}
+        for col_name in dut_fields:
+            if col_name in headers:
+                device[col_name] = str(sheet.cell(row_index, headers[col_name]).value or "").strip()
+        is_default = str(sheet.cell(row_index, headers.get("默认选项", 1)).value or "").strip() == "是"
+        if is_default:
+            default_device = device
+        else:
+            devices.append(device)
+    if default_device is not None:
+        devices.insert(0, default_device)
+    return devices
+
+
+def upsert_create_record_row(
     workbook_path: Path,
-    row_index: int,
+    manifest: "CaseManifest",
     tag_result: TagResult,
 ) -> None:
-    """审核通过后，将人工确认的标签写回「创建记录」sheet 对应行。
+    """审核通过后，在「创建记录」sheet 末尾追加一行。sheet 不存在时自动创建并写入表头。
 
-    _header_map() 返回 {header: 1-based-col-index}，直接用于 sheet.cell(column=...)。
-    workbook_path 必须是 .xlsx，不支持 .xlsm 写回。
+    workbook_path 必须是 .xlsx。
     """
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
-    sheet = workbook["创建记录"]
+
+    if "创建记录" not in workbook.sheetnames:
+        sheet = workbook.create_sheet("创建记录")
+        sheet.append(_CREATE_RECORD_HEADERS)
+    else:
+        sheet = workbook["创建记录"]
+
     headers = _header_map(sheet)
-    field_map = {
+    target_row = sheet.max_row + 1
+
+    # 构建服务器路径（Windows UNC 格式）
+    server_case = str(manifest.server_case_dir).replace("/", "\\")
+    case_id = manifest.case_id
+    vs_nomal = f"{server_case}\\{case_id}_{manifest.vs_normal_path.name}"
+    vs_night = f"{server_case}\\{case_id}_night_{manifest.vs_night_path.name}"
+    raw_path = f"{server_case}\\{case_id}_RK_raw_{manifest.raw_path.name}"
+
+    data: Dict[str, str] = {
+        "序号": str(target_row - 1),
+        "文件夹名": case_id,
+        "备注": tag_result.scene_description,
+        "创建日期": manifest.created_date,
+        "数量": "1",
         "安装方式": tag_result.install_method,
         "运动模式": tag_result.motion_mode,
         "运镜元素": tag_result.camera_move,
         "光源划分": tag_result.light_source,
         "画面特征": tag_result.image_feature,
         "影像表达": tag_result.image_expression,
-        "标签审核状态": tag_result.review_status,
+        "Raw存放路径": raw_path,
+        "VS_Nomal": vs_nomal,
+        "VS_Night": vs_night,
+        **tag_result.device_info,
     }
-    for col_name, value in field_map.items():
+    for col_name, value in data.items():
         if col_name in headers:
-            sheet.cell(row=row_index, column=headers[col_name]).value = value
+            sheet.cell(row=target_row, column=headers[col_name]).value = value
+
     workbook.save(workbook_path)

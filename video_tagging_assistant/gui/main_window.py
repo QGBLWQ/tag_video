@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.excel_workbook import write_tag_result_to_create_record
+from video_tagging_assistant.excel_workbook import upsert_create_record_row, load_dut_info
 from video_tagging_assistant.gui.execution_tab import ExecutionTab
 from video_tagging_assistant.gui.execution_worker import ExecutionWorker
 from video_tagging_assistant.gui.review_panel import ReviewPanel
@@ -65,21 +65,27 @@ class MainWindow(QMainWindow):
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
 
     def _on_tagging_complete(self, results: list) -> None:
-        """打标完成：解锁审核 Tab，切换过去，并加载 case 列表。"""
+        """打标完成：同步当前工作簿路径，解锁审核 Tab，切换过去，并加载 case 列表。"""
+        self._workbook_path = Path(self._tagging_tab._workbook_edit.text().strip())
         manifests = [r["manifest"] for r in results]
         tagging_results = {r["manifest"].case_id: r["ai_result"] for r in results}
+        dut_devices = []
+        try:
+            dut_devices = load_dut_info(self._workbook_path)
+        except Exception:
+            pass
         self._tabs.setTabEnabled(1, True)
         self._tabs.setCurrentIndex(1)
-        self._review_tab.load_cases(manifests, tagging_results)
+        self._review_tab.load_cases(manifests, tagging_results, dut_devices=dut_devices)
 
     def _on_case_approved(self, manifest, tag_result) -> None:
-        """审核通过：写回工作簿，将 case 加入执行队列，解锁执行 Tab。"""
-        if self._workbook_path.exists():
-            write_tag_result_to_create_record(
-                self._workbook_path,
-                manifest.row_index,
-                tag_result,
-            )
+        """审核通过：写回工作簿（仅 .xlsx），将 case 加入执行队列，解锁执行 Tab。"""
+        if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
+            try:
+                upsert_create_record_row(self._workbook_path, manifest, tag_result)
+                self.statusBar().showMessage(f"已写入 {manifest.case_id}", 3000)
+            except Exception as exc:
+                self.statusBar().showMessage(f"写回失败: {exc}", 0)
         self._tabs.setTabEnabled(2, True)
         self._execution_tab.add_case(manifest)
 

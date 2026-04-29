@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.excel_workbook import build_case_manifests
+from video_tagging_assistant.excel_workbook import load_get_list_manifests, get_next_case_sequence
 
 
 class _TaggingWorker(QThread):
@@ -81,7 +81,10 @@ class _TaggingWorker(QThread):
         results = []
         for i, manifest in enumerate(self._manifests):
             cached = load_cached_result(cache_root, manifest) or {}
-            ai_result = cached.get("structured_tags", {})
+            ai_result = dict(cached.get("structured_tags", {}))
+            ai_result.update(cached.get("multi_select_tags", {}))
+            if cached.get("scene_description"):
+                ai_result["画面描述"] = cached["scene_description"]
             stem = manifest.vs_normal_path.stem
             json_path = intermediate_dir / f"{stem}.json"
             with open(json_path, "w", encoding="utf-8") as f:
@@ -191,13 +194,18 @@ class TaggingTab(QWidget):
         if not wb_path.exists():
             return
         try:
-            self._manifests = build_case_manifests(
+            pc_id = self._config.get("pc_id", "A")
+            starting_seq = get_next_case_sequence(wb_path, pc_id)
+            self._manifests = load_get_list_manifests(
                 workbook_path=wb_path,
                 source_sheet="获取列表",
-                allowed_statuses=set(),
+                pc_id=pc_id,
+                dji_nomal_dir=Path(self._config.get("dji_nomal_dir", ".")),
+                dji_night_dir=Path(self._config.get("dji_night_dir", ".")),
                 local_root=Path(self._config.get("local_case_root", "cases")),
                 server_root=Path(self._config.get("server_upload_root", "server_cases")),
                 mode=self._config.get("mode", ""),
+                starting_sequence=starting_seq,
             )
         except Exception as exc:
             self._error_list.addItem(f"加载失败: {exc}")

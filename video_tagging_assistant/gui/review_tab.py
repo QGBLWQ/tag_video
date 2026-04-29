@@ -14,6 +14,7 @@ from pathlib import Path
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,6 +24,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +58,7 @@ class ReviewTab(QWidget):
         self._tagging_results: dict = {}
         self._current_index: int = 0
         self._groups: dict = {}
+        self._device_combo: QComboBox = QComboBox()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -71,10 +74,22 @@ class ReviewTab(QWidget):
         info_row.addWidget(self._preview_btn)
         outer.addLayout(info_row)
 
-        # AI 原始返回（参考）
-        self._ai_label = QLabel("AI 原始返回：（未加载）")
-        self._ai_label.setWordWrap(True)
-        outer.addWidget(self._ai_label)
+        # 设备编号选择（选一次后自动沿用）
+        device_row = QHBoxLayout()
+        device_row.addWidget(QLabel("设备编号："))
+        device_row.addWidget(self._device_combo, stretch=1)
+        outer.addLayout(device_row)
+
+        # AI 标签摘要（不含画面描述）
+        self._ai_summary_label = QLabel("AI 标签：（未加载）")
+        self._ai_summary_label.setWordWrap(True)
+        outer.addWidget(self._ai_summary_label)
+
+        # 画面描述（可编辑）
+        outer.addWidget(QLabel("画面描述（可修改）："))
+        self._scene_desc_edit = QTextEdit()
+        self._scene_desc_edit.setMaximumHeight(80)
+        outer.addWidget(self._scene_desc_edit)
 
         # 字段选择区域（可滚动）
         scroll = QScrollArea()
@@ -111,15 +126,18 @@ class ReviewTab(QWidget):
             self._fields_layout.removeRow(0)
         self._groups.clear()
 
-        # 单选字段：显示全部候选项
+        # 单选字段：显示全部候选项，AI 建议值预选
         for field in _SINGLE_FIELDS:
             options = self._tag_options.get(field, [])
+            ai_value = ai_result.get(field, "")
             group = QButtonGroup(self)
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
             for opt in options:
                 rb = QRadioButton(opt)
+                if opt == ai_value:
+                    rb.setChecked(True)
                 group.addButton(rb)
                 row_layout.addWidget(rb)
             row_layout.addStretch()
@@ -145,11 +163,20 @@ class ReviewTab(QWidget):
             label = f"{field}（AI 建议，选一）："
             self._fields_layout.addRow(label, row_widget)
 
-    def load_cases(self, cases: list, tagging_results: dict) -> None:
+    def load_cases(self, cases: list, tagging_results: dict, dut_devices: list = None) -> None:
         """由 MainWindow 在打标完成后调用，初始化审核队列。"""
         self._manifests = cases
         self._tagging_results = tagging_results
         self._current_index = 0
+        if dut_devices:
+            prev_device = self._device_combo.currentText()
+            self._device_combo.clear()
+            for device in dut_devices:
+                self._device_combo.addItem(device.get("设备编号", ""), device)
+            # 恢复上次选择
+            idx = self._device_combo.findText(prev_device)
+            if idx >= 0:
+                self._device_combo.setCurrentIndex(idx)
         self._show_case(0)
 
     def _show_case(self, index: int) -> None:
@@ -165,14 +192,17 @@ class ReviewTab(QWidget):
         self._case_label.setText(f"{manifest.case_id}   {manifest.vs_normal_path.name}")
         self._note_edit.clear()
 
-        # 构建 AI 原始返回摘要
+        # 构建 AI 标签摘要（排除画面描述）
         lines = []
         for k, v in ai_result.items():
+            if k == "画面描述":
+                continue
             if isinstance(v, list):
                 lines.append(f"{k}: {', '.join(v)}")
             else:
                 lines.append(f"{k}: {v}")
-        self._ai_label.setText("AI 原始返回：" + " | ".join(lines))
+        self._ai_summary_label.setText("AI 标签：" + " | ".join(lines))
+        self._scene_desc_edit.setPlainText(ai_result.get("画面描述", ""))
 
         self._rebuild_field_buttons(ai_result)
 
@@ -200,6 +230,7 @@ class ReviewTab(QWidget):
             return
 
         manifest = self._manifests[self._current_index]
+        device_info = self._device_combo.currentData() or {}
         tag_result = TagResult(
             install_method=selections.get("安装方式", ""),
             motion_mode=selections.get("运动模式", ""),
@@ -207,6 +238,8 @@ class ReviewTab(QWidget):
             light_source=selections.get("光源", ""),
             image_feature=selections.get("画面特征", ""),
             image_expression=selections.get("影像表达", ""),
+            scene_description=self._scene_desc_edit.toPlainText().strip(),
+            device_info=device_info,
             review_status="审核通过",
         )
         self.case_approved.emit(manifest, tag_result)

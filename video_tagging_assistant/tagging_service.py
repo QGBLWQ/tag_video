@@ -101,6 +101,8 @@ def run_batch_tagging(
             "summary_text": generated.summary_text,
             "tags": [f"{key}={value}" for key, value in generated.structured_tags.items()],
             "scene_description": generated.scene_description,
+            "structured_tags": generated.structured_tags,
+            "multi_select_tags": generated.multi_select_tags,
         }
         save_cached_result(cache_root, manifest, payload)
         results.append(
