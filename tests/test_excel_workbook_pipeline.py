@@ -123,13 +123,6 @@ def test_ensure_pipeline_columns_appends_runtime_headers(tmp_path: Path):
 def test_build_case_manifests_from_get_list_bridges_back_to_create_record(tmp_path: Path):
     workbook_path = tmp_path / "records.xlsx"
     build_bridge_workbook(workbook_path)
-    ensure_pipeline_columns(workbook_path, source_sheet="创建记录")
-    update_pipeline_status(
-        workbook_path,
-        source_sheet="创建记录",
-        case_id="case_A_0001",
-        status_updates={"pipeline_status": "queued"},
-    )
 
     manifests = build_case_manifests(
         workbook_path,
@@ -150,13 +143,6 @@ def test_build_case_manifests_from_get_list_bridges_back_to_create_record(tmp_pa
 def test_build_case_manifests_from_get_list_raises_when_create_record_match_missing(tmp_path: Path):
     workbook_path = tmp_path / "records.xlsx"
     build_bridge_workbook(workbook_path)
-    ensure_pipeline_columns(workbook_path, source_sheet="创建记录")
-    update_pipeline_status(
-        workbook_path,
-        source_sheet="创建记录",
-        case_id="case_A_0001",
-        status_updates={"pipeline_status": "queued"},
-    )
 
     wb = load_workbook(workbook_path)
     ws = wb["获取列表"]
@@ -196,19 +182,6 @@ def test_build_case_manifests_from_get_list_raises_when_create_record_match_is_a
         "行走",
     ])
     wb.save(workbook_path)
-    ensure_pipeline_columns(workbook_path, source_sheet="创建记录")
-    update_pipeline_status(
-        workbook_path,
-        source_sheet="创建记录",
-        case_id="case_A_0001",
-        status_updates={"pipeline_status": "queued"},
-    )
-    update_pipeline_status(
-        workbook_path,
-        source_sheet="创建记录",
-        case_id="case_A_0002",
-        status_updates={"pipeline_status": "queued"},
-    )
 
     with pytest.raises(ValueError) as exc:
         build_case_manifests(
