@@ -252,7 +252,7 @@ def test_launch_case_pipeline_gui_injects_real_scan_and_refresh(monkeypatch, tmp
     workbook_path = tmp_path / "records.xlsx"
     wb = Workbook()
     ws = wb.active
-    ws.title = "创建记录"
+    ws.title = "获取列表"
     ws.append(["序号", "文件夹名", "备注", "创建日期", "Raw存放路径", "VS_Nomal", "VS_Night", "安装方式", "运动模式"])
     ws.append([1, "case_A_0105", "场景备注", "20260428", r"E:\DV\raw", r"E:\DV\normal.MP4", r"E:\DV\night.MP4", "手持", "行走"])
     review = wb.create_sheet("审核结果")
@@ -326,7 +326,7 @@ def test_launch_case_pipeline_gui_injects_execution_bridge(monkeypatch, tmp_path
         def exec_(self):
             return 0
 
-    monkeypatch.setattr(gui_app, "PipelineController", lambda: FakeController())
+    monkeypatch.setattr(gui_app, "PipelineController", lambda **kwargs: FakeController())
     monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
     monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
 
@@ -451,7 +451,61 @@ def test_launch_case_pipeline_gui_injects_tagging_bridge(monkeypatch, tmp_path: 
     ]
 
 
-def test_launch_case_pipeline_gui_keeps_excel_tagging_inputs_in_excel_mode(monkeypatch, tmp_path: Path):
+def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_path: Path):
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("placeholder", encoding="utf-8")
+    captured = {}
+    calls = {}
+
+    class FakeWindow:
+        def __init__(self, scan_cases=None, **kwargs):
+            captured["scan_cases"] = scan_cases
+
+        def show(self):
+            pass
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "获取列表",
+                "review_sheet": "审核结果",
+            },
+        },
+    )
+    monkeypatch.setattr(gui_app, "ensure_pipeline_columns", lambda workbook, source_sheet: calls.update({"source_sheet": source_sheet}))
+    monkeypatch.setattr(
+        gui_app,
+        "build_case_manifests",
+        lambda workbook, source_sheet, allowed_statuses, local_root, server_root, mode: calls.update({"manifest_source_sheet": source_sheet}) or [],
+    )
+
+    gui_app.launch_case_pipeline_gui(workbook_path=str(workbook_path))
+    captured["scan_cases"]()
+
+    assert calls["source_sheet"] == "获取列表"
+    assert calls["manifest_source_sheet"] == "获取列表"
+
+
     captured = {}
     tagging_calls = []
 
@@ -695,7 +749,206 @@ def test_launch_case_pipeline_gui_remaps_tagging_inputs_from_local_root(monkeypa
     assert calls["mode"] == "MY_MODE"
 
 
-def test_launch_case_pipeline_gui_raises_when_local_tagging_input_missing(monkeypatch, tmp_path: Path):
+def test_launch_case_pipeline_gui_rewrites_upload_target_when_local_upload_enabled(monkeypatch, tmp_path: Path):
+    captured = {}
+    upload_calls = []
+
+    class FakeController:
+        def __init__(self, pull_runner=None, copy_runner=None, upload_runner=None, event_callback=None):
+            captured["upload_runner"] = upload_runner
+
+        def has_execution_case(self):
+            return False
+
+        def run_next_execution_case(self):
+            return None
+
+    class FakeWindow:
+        def __init__(self, **kwargs):
+            pass
+
+        def show(self):
+            pass
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "PipelineController", FakeController)
+    monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "获取列表",
+                "review_sheet": "审核结果",
+                "local_upload_enabled": True,
+                "local_upload_root": str(tmp_path / "mock_server_cases"),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        gui_app,
+        "upload_case_directory",
+        lambda case_id, local_case_dir, server_case_dir, progress_callback=None: upload_calls.append(
+            (case_id, local_case_dir, server_case_dir)
+        ),
+    )
+
+    gui_app.launch_case_pipeline_gui(workbook_path=str(tmp_path / "records.xlsx"))
+    captured["upload_runner"](
+        "case_A_0001",
+        tmp_path / "cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+        tmp_path / "server_cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+    )
+
+    assert upload_calls == [
+        (
+            "case_A_0001",
+            tmp_path / "cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+            tmp_path / "mock_server_cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+        )
+    ]
+
+
+
+def test_launch_case_pipeline_gui_keeps_server_upload_target_when_local_upload_disabled(monkeypatch, tmp_path: Path):
+    captured = {}
+    upload_calls = []
+
+    class FakeController:
+        def __init__(self, pull_runner=None, copy_runner=None, upload_runner=None, event_callback=None):
+            captured["upload_runner"] = upload_runner
+
+        def has_execution_case(self):
+            return False
+
+        def run_next_execution_case(self):
+            return None
+
+    class FakeWindow:
+        def __init__(self, **kwargs):
+            pass
+
+        def show(self):
+            pass
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "PipelineController", FakeController)
+    monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "获取列表",
+                "review_sheet": "审核结果",
+                "local_upload_enabled": False,
+                "local_upload_root": str(tmp_path / "mock_server_cases"),
+            },
+        },
+    )
+    monkeypatch.setattr(
+        gui_app,
+        "upload_case_directory",
+        lambda case_id, local_case_dir, server_case_dir, progress_callback=None: upload_calls.append(
+            (case_id, local_case_dir, server_case_dir)
+        ),
+    )
+
+    gui_app.launch_case_pipeline_gui(workbook_path=str(tmp_path / "records.xlsx"))
+    original_target = tmp_path / "server_cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001"
+    captured["upload_runner"](
+        "case_A_0001",
+        tmp_path / "cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+        original_target,
+    )
+
+    assert upload_calls == [
+        (
+            "case_A_0001",
+            tmp_path / "cases" / "OV50H40_Action5Pro_DCG HDR" / "20260414" / "case_A_0001",
+            original_target,
+        )
+    ]
+
+
+
+def test_launch_case_pipeline_gui_requires_local_upload_root_when_local_upload_enabled(monkeypatch, tmp_path: Path):
+    class FakeWindow:
+        def __init__(self, **kwargs):
+            pass
+
+        def show(self):
+            pass
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "获取列表",
+                "review_sheet": "审核结果",
+                "local_upload_enabled": True,
+                "local_upload_root": "",
+            },
+        },
+    )
+
+    with pytest.raises(ValueError) as exc:
+        gui_app.launch_case_pipeline_gui(workbook_path=str(tmp_path / "records.xlsx"))
+
+    assert "local_upload_root" in str(exc.value)
+
+
     captured = {}
 
     class FakeWindow:

@@ -43,7 +43,7 @@
     "retry_backoff_multiplier": 2
   },
   "gui_pipeline": {
-    "source_sheet": "创建记录",
+    "source_sheet": "获取列表",
     "review_sheet": "审核结果",
     "mode": "OV50H40_Action5Pro_DCG HDR",
     "allowed_statuses": ["", "queued", "failed"],
@@ -52,6 +52,8 @@
     "cache_root": "artifacts/cache",
     "tagging_output_root": "artifacts/gui_pipeline",
     "tagging_input_mode": "excel",
-    "tagging_input_root": "videos"
+    "tagging_input_root": "videos",
+    "local_upload_enabled": false,
+    "local_upload_root": "mock_server_cases"
   }
 }

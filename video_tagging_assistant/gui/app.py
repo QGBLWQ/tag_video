@@ -15,9 +15,10 @@ from video_tagging_assistant.providers.mock_provider import MockVideoTagProvider
 from video_tagging_assistant.providers.openai_compatible import OpenAICompatibleVideoTagProvider
 from video_tagging_assistant.providers.qwen_dashscope_provider import QwenDashScopeVideoTagProvider
 from video_tagging_assistant.tagging_service import run_batch_tagging
+from video_tagging_assistant.upload_worker import upload_case_directory
 
 DEFAULT_MODE = "OV50H40_Action5Pro_DCG HDR"
-DEFAULT_SOURCE_SHEET = "创建记录"
+DEFAULT_SOURCE_SHEET = "获取列表"
 DEFAULT_REVIEW_SHEET = "审核结果"
 DEFAULT_ALLOWED_STATUSES = {"", "queued", "failed"}
 DEFAULT_LOCAL_ROOT = Path("cases")
@@ -27,6 +28,8 @@ DEFAULT_CACHE_ROOT = Path("artifacts/cache")
 DEFAULT_TAGGING_OUTPUT_ROOT = Path("artifacts/gui_pipeline")
 DEFAULT_TAGGING_INPUT_MODE = "excel"
 DEFAULT_TAGGING_INPUT_ROOT = Path("videos")
+DEFAULT_LOCAL_UPLOAD_ENABLED = False
+DEFAULT_LOCAL_UPLOAD_ROOT = Path("mock_server_cases")
 
 
 def build_provider_from_config(config: dict):
@@ -78,12 +81,29 @@ def _resolve_tagging_manifests(manifests, tagging_input_mode: str, tagging_input
     return resolved
 
 
+def _build_upload_runner(local_upload_enabled: bool, local_upload_root: Path, local_upload_root_raw: str):
+    if not local_upload_enabled:
+        return upload_case_directory
+    if not str(local_upload_root_raw).strip():
+        raise ValueError("gui_pipeline.local_upload_root is required when local_upload_enabled is true")
+
+    def upload_runner(case_id, local_case_dir, server_case_dir, progress_callback=None):
+        target_dir = local_upload_root / Path(*server_case_dir.parts[-3:])
+        return upload_case_directory(case_id, local_case_dir, target_dir, progress_callback=progress_callback)
+
+    return upload_runner
+
+
 def launch_case_pipeline_gui(workbook_path=None):
     app = QApplication.instance() or QApplication([])
     workbook = Path(workbook_path) if workbook_path else None
-    controller = PipelineController()
     config = load_config(DEFAULT_CONFIG_PATH)
     gui_pipeline = config.get("gui_pipeline", {})
+    local_upload_enabled = bool(gui_pipeline.get("local_upload_enabled", DEFAULT_LOCAL_UPLOAD_ENABLED))
+    local_upload_root_raw = gui_pipeline.get("local_upload_root", str(DEFAULT_LOCAL_UPLOAD_ROOT))
+    local_upload_root = Path(local_upload_root_raw)
+    upload_runner = _build_upload_runner(local_upload_enabled, local_upload_root, local_upload_root_raw)
+    controller = PipelineController(upload_runner=upload_runner)
 
     source_sheet = gui_pipeline.get("source_sheet", DEFAULT_SOURCE_SHEET)
     review_sheet = gui_pipeline.get("review_sheet", DEFAULT_REVIEW_SHEET)
