@@ -1,3 +1,13 @@
+"""三 Tab 主窗口：打标 → 审核 → 执行队列。
+
+管理 Tab 间状态切换，不直接执行业务逻辑：
+  - 打标完成 → 解锁审核 Tab，调用 review_tab.load_cases()
+  - 审核通过 → 写回工作簿，将 manifest 加入执行队列，解锁执行 Tab
+
+PipelineMainWindow 保留供旧代码向后兼容。
+"""
+from pathlib import Path
+
 from PyQt5.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -11,9 +21,77 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from video_tagging_assistant.excel_workbook import write_tag_result_to_create_record
+from video_tagging_assistant.gui.execution_tab import ExecutionTab
+from video_tagging_assistant.gui.execution_worker import ExecutionWorker
 from video_tagging_assistant.gui.review_panel import ReviewPanel
+from video_tagging_assistant.gui.review_tab import ReviewTab
 from video_tagging_assistant.gui.table_models import CaseTableModel
+from video_tagging_assistant.gui.tagging_tab import TaggingTab
 
+
+class MainWindow(QMainWindow):
+    def __init__(self, config: dict, tag_options: dict, parent=None) -> None:
+        super().__init__(parent)
+        self._config = config
+        self._tag_options = tag_options
+        self._workbook_path = Path(config.get("workbook_path", ""))
+
+        self.setWindowTitle("Video Tagging Pipeline")
+
+        # 执行 Worker（后台线程，贯穿整个 window 生命周期）
+        self._worker = ExecutionWorker(config)
+        self._worker.start()
+
+        # 三个 Tab
+        self._tagging_tab = TaggingTab(config)
+        self._review_tab = ReviewTab(config, tag_options)
+        self._execution_tab = ExecutionTab(self._worker)
+
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._tagging_tab, "打标")
+        self._tabs.addTab(self._review_tab, "审核")
+        self._tabs.addTab(self._execution_tab, "执行队列")
+
+        # 初始状态：审核和执行 Tab 禁用
+        self._tabs.setTabEnabled(1, False)
+        self._tabs.setTabEnabled(2, False)
+
+        self.setCentralWidget(self._tabs)
+
+        # 信号连接
+        self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
+        self._review_tab.case_approved.connect(self._on_case_approved)
+        self._worker.status_changed.connect(self._execution_tab.on_status_changed)
+
+    def _on_tagging_complete(self, results: list) -> None:
+        """打标完成：解锁审核 Tab，切换过去，并加载 case 列表。"""
+        manifests = [r["manifest"] for r in results]
+        tagging_results = {r["manifest"].case_id: r["ai_result"] for r in results}
+        self._tabs.setTabEnabled(1, True)
+        self._tabs.setCurrentIndex(1)
+        self._review_tab.load_cases(manifests, tagging_results)
+
+    def _on_case_approved(self, manifest, tag_result) -> None:
+        """审核通过：写回工作簿，将 case 加入执行队列，解锁执行 Tab。"""
+        if self._workbook_path.exists():
+            write_tag_result_to_create_record(
+                self._workbook_path,
+                manifest.row_index,
+                tag_result,
+            )
+        self._tabs.setTabEnabled(2, True)
+        self._execution_tab.add_case(manifest)
+
+    def closeEvent(self, event) -> None:
+        self._worker.stop()
+        self._worker.wait(3000)
+        super().closeEvent(event)
+
+
+# ---------------------------------------------------------------------------
+# Legacy window — kept for backward compatibility with app.py and older tests
+# ---------------------------------------------------------------------------
 
 class PipelineMainWindow(QMainWindow):
     def __init__(
