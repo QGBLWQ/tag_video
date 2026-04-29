@@ -51,7 +51,7 @@
     "server_root": "server_cases",
     "cache_root": "artifacts/cache",
     "tagging_output_root": "artifacts/gui_pipeline",
-    "tagging_input_mode": "excel",
+    "tagging_input_mode": "local_root",
     "tagging_input_root": "videos",
     "local_upload_enabled": false,
     "local_upload_root": "mock_server_cases"

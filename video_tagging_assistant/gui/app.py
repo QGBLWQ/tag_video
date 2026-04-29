@@ -119,7 +119,8 @@ def launch_case_pipeline_gui(workbook_path=None):
     def scan_cases():
         if workbook is None or not workbook.exists():
             return []
-        ensure_pipeline_columns(workbook, source_sheet=source_sheet)
+        if source_sheet != "获取列表":
+            ensure_pipeline_columns(workbook, source_sheet=source_sheet)
         return build_case_manifests(
             workbook,
             source_sheet=source_sheet,

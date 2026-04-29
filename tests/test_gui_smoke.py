@@ -252,7 +252,7 @@ def test_launch_case_pipeline_gui_injects_real_scan_and_refresh(monkeypatch, tmp
     workbook_path = tmp_path / "records.xlsx"
     wb = Workbook()
     ws = wb.active
-    ws.title = "获取列表"
+    ws.title = "创建记录"
     ws.append(["序号", "文件夹名", "备注", "创建日期", "Raw存放路径", "VS_Nomal", "VS_Night", "安装方式", "运动模式"])
     ws.append([1, "case_A_0105", "场景备注", "20260428", r"E:\DV\raw", r"E:\DV\normal.MP4", r"E:\DV\night.MP4", "手持", "行走"])
     review = wb.create_sheet("审核结果")
@@ -283,6 +283,21 @@ def test_launch_case_pipeline_gui_injects_real_scan_and_refresh(monkeypatch, tmp
 
     monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
     monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "创建记录",
+                "review_sheet": "审核结果",
+            },
+        },
+    )
 
     gui_app.launch_case_pipeline_gui(workbook_path=str(workbook_path))
 
@@ -451,7 +466,82 @@ def test_launch_case_pipeline_gui_injects_tagging_bridge(monkeypatch, tmp_path: 
     ]
 
 
-def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_path: Path):
+def test_launch_case_pipeline_gui_bridges_get_list_into_manifests(monkeypatch, tmp_path: Path):
+    workbook_path = tmp_path / "records.xlsx"
+    wb = Workbook()
+    create_record = wb.active
+    create_record.title = "创建记录"
+    create_record.append(["序号", "文件夹名", "备注", "创建日期", "Raw存放路径", "VS_Nomal", "VS_Night", "安装方式", "运动模式", "pipeline_status"])
+    create_record.append([
+        1,
+        "case_A_0001",
+        "场景备注",
+        "20260422",
+        r"E:\DV\case_A_0001\case_A_0001_RK_raw_117",
+        r"E:\DV\case_A_0001\DJI_20260422151829_0001_D.MP4",
+        r"E:\DV\case_A_0001\DJI_20260422151916_0021_D.MP4",
+        "手持",
+        "行走",
+        "queued",
+    ])
+    get_list = wb.create_sheet("获取列表")
+    get_list.append(["日期", "20260422", "", ""])
+    get_list.append(["处理状态", "RK_raw", "Action5Pro_Nomal", "Action5Pro_Night"])
+    get_list.append(["R", "117", "DJI_20260422151829_0001_D.MP4", "DJI_20260422151916_0021_D.MP4"])
+    review = wb.create_sheet("审核结果")
+    review.append(["文件夹名", "创建记录行号", "Raw存放路径", "视频路径", "自动简介", "自动标签", "自动画面描述", "审核结论", "人工修订简介", "人工修订标签", "审核备注", "审核人", "审核时间", "同步状态", "归档状态", "归档目标路径"])
+    wb.save(workbook_path)
+
+    captured = {}
+
+    class FakeWindow:
+        def __init__(self, scan_cases=None, **kwargs):
+            captured["scan_cases"] = scan_cases
+
+        def show(self):
+            pass
+
+    class FakeQApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "PipelineMainWindow", FakeWindow)
+    monkeypatch.setattr(gui_app, "QApplication", FakeQApplication)
+    monkeypatch.setattr(
+        gui_app,
+        "load_config",
+        lambda path: {
+            "input_dir": "videos",
+            "output_dir": "output",
+            "compression": {},
+            "provider": {"name": "mock", "model": "mock-model"},
+            "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "获取列表",
+                "review_sheet": "审核结果",
+                "mode": "OV50H40_Action5Pro_DCG HDR",
+                "allowed_statuses": ["queued"],
+                "local_root": str(tmp_path / "local"),
+                "server_root": str(tmp_path / "server"),
+            },
+        },
+    )
+
+    gui_app.launch_case_pipeline_gui(workbook_path=str(workbook_path))
+    manifests = captured["scan_cases"]()
+
+    assert [manifest.case_id for manifest in manifests] == ["case_A_0001"]
+
+
+
+def test_launch_case_pipeline_gui_uses_create_record_source_sheet(monkeypatch, tmp_path: Path):
     workbook_path = tmp_path / "records.xlsx"
     workbook_path.write_text("placeholder", encoding="utf-8")
     captured = {}
@@ -487,7 +577,7 @@ def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_pa
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
-                "source_sheet": "获取列表",
+                "source_sheet": "创建记录",
                 "review_sheet": "审核结果",
             },
         },
@@ -502,10 +592,12 @@ def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_pa
     gui_app.launch_case_pipeline_gui(workbook_path=str(workbook_path))
     captured["scan_cases"]()
 
-    assert calls["source_sheet"] == "获取列表"
-    assert calls["manifest_source_sheet"] == "获取列表"
+    assert calls["source_sheet"] == "创建记录"
+    assert calls["manifest_source_sheet"] == "创建记录"
 
 
+
+def test_launch_case_pipeline_gui_keeps_excel_tagging_inputs_in_excel_mode(monkeypatch, tmp_path: Path):
     captured = {}
     tagging_calls = []
 
@@ -539,6 +631,8 @@ def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_pa
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
+                "source_sheet": "创建记录",
+                "review_sheet": "审核结果",
                 "tagging_input_mode": "excel",
                 "tagging_input_root": "ignored",
             },
@@ -568,6 +662,7 @@ def test_launch_case_pipeline_gui_uses_get_list_source_sheet(monkeypatch, tmp_pa
 
     captured["start_tagging"]([manifest], "fresh", lambda event: None)
 
+    assert tagging_calls == [[manifest]]
 
 
 def test_launch_case_pipeline_gui_remaps_tagging_inputs_from_local_root(monkeypatch, tmp_path: Path):
@@ -794,7 +889,7 @@ def test_launch_case_pipeline_gui_rewrites_upload_target_when_local_upload_enabl
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
-                "source_sheet": "获取列表",
+                "source_sheet": "创建记录",
                 "review_sheet": "审核结果",
                 "local_upload_enabled": True,
                 "local_upload_root": str(tmp_path / "mock_server_cases"),
@@ -871,7 +966,7 @@ def test_launch_case_pipeline_gui_keeps_server_upload_target_when_local_upload_d
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
-                "source_sheet": "获取列表",
+                "source_sheet": "创建记录",
                 "review_sheet": "审核结果",
                 "local_upload_enabled": False,
                 "local_upload_root": str(tmp_path / "mock_server_cases"),
@@ -935,7 +1030,7 @@ def test_launch_case_pipeline_gui_requires_local_upload_root_when_local_upload_e
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
-                "source_sheet": "获取列表",
+                "source_sheet": "创建记录",
                 "review_sheet": "审核结果",
                 "local_upload_enabled": True,
                 "local_upload_root": "",
@@ -1045,6 +1140,8 @@ def test_launch_case_pipeline_gui_rejects_invalid_tagging_input_mode(monkeypatch
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
             "gui_pipeline": {
+                "source_sheet": "创建记录",
+                "review_sheet": "审核结果",
                 "tagging_input_mode": "bad_mode",
                 "tagging_input_root": "videos",
             },
@@ -1074,6 +1171,7 @@ def test_launch_case_pipeline_gui_rejects_invalid_tagging_input_mode(monkeypatch
     assert "bad_mode" in str(exc.value)
 
 
+def test_launch_case_pipeline_gui_falls_back_when_gui_pipeline_missing(monkeypatch, tmp_path: Path):
     captured = {}
 
     class FakeWindow:
@@ -1105,6 +1203,10 @@ def test_launch_case_pipeline_gui_rejects_invalid_tagging_input_mode(monkeypatch
             "compression": {},
             "provider": {"name": "mock", "model": "mock-model"},
             "prompt_template": {"system": "describe"},
+            "gui_pipeline": {
+                "source_sheet": "创建记录",
+                "review_sheet": "审核结果",
+            },
         },
     )
 
@@ -1129,7 +1231,7 @@ def test_launch_case_pipeline_gui_rejects_invalid_tagging_input_mode(monkeypatch
     gui_app.launch_case_pipeline_gui(workbook_path=str(workbook))
     captured["scan_cases"]()
 
-    assert calls["source_sheet"] == gui_app.DEFAULT_SOURCE_SHEET
+    assert calls["source_sheet"] == "创建记录"
     assert calls["allowed_statuses"] == gui_app.DEFAULT_ALLOWED_STATUSES
     assert calls["local_root"] == gui_app.DEFAULT_LOCAL_ROOT
     assert calls["server_root"] == gui_app.DEFAULT_SERVER_ROOT

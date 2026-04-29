@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -37,12 +38,91 @@ PIPELINE_RUNTIME_HEADERS = [
     "updated_at",
 ]
 
+GET_LIST_REQUIRED_HEADERS = {"处理状态", "RK_raw", "Action5Pro_Nomal", "Action5Pro_Night"}
+
+
+@dataclass
+class GetListRow:
+    created_date: str
+    status: str
+    rk_raw: str
+    vs_normal_name: str
+    vs_night_name: str
+
+
+def _reject_xlsm_write(workbook_path: Path) -> None:
+    if Path(workbook_path).suffix.lower() == ".xlsm":
+        raise ValueError(f"{workbook_path} 是 .xlsm 工作簿，当前仅支持只读访问，禁止原地写回以避免损坏台账")
+
 
 def _header_map(sheet) -> Dict[str, int]:
     return {str(cell.value).strip(): idx + 1 for idx, cell in enumerate(sheet[1]) if cell.value is not None}
 
 
+def _header_map_for_row(sheet, row_index: int) -> Dict[str, int]:
+    return {
+        str(cell.value).strip(): idx + 1
+        for idx, cell in enumerate(sheet[row_index])
+        if cell.value is not None
+    }
+
+
+def _extract_raw_suffix(raw_path: str) -> str:
+    return Path(raw_path).name.split("_")[-1]
+
+
+def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListRow]:
+    workbook = load_workbook(workbook_path, data_only=True)
+    sheet = workbook[source_sheet]
+    created_date = str(sheet.cell(1, 2).value or "").strip()
+    headers = _header_map_for_row(sheet, 2)
+    missing = GET_LIST_REQUIRED_HEADERS - set(headers)
+    if missing:
+        raise ValueError(f"获取列表 缺少必要表头: {sorted(missing)}")
+
+    rows: List[GetListRow] = []
+    for row_index in range(3, sheet.max_row + 1):
+        rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
+        normal = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
+        night = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
+        if not rk_raw and not normal and not night:
+            continue
+        rows.append(
+            GetListRow(
+                created_date=created_date,
+                status=str(sheet.cell(row_index, headers["处理状态"]).value or "").strip(),
+                rk_raw=rk_raw,
+                vs_normal_name=normal,
+                vs_night_name=night,
+            )
+        )
+    return rows
+
+
+def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_list_row: GetListRow) -> ExcelCaseRecord:
+    matches = [
+        row
+        for row in create_record_rows
+        if _extract_raw_suffix(row.raw_path) == get_list_row.rk_raw
+        and Path(row.vs_normal_path).name == get_list_row.vs_normal_name
+        and Path(row.vs_night_path).name == get_list_row.vs_night_name
+    ]
+    if not matches:
+        raise ValueError(
+            "No matching create-record row found for "
+            f"RK_raw={get_list_row.rk_raw}, normal={get_list_row.vs_normal_name}, night={get_list_row.vs_night_name}"
+        )
+    if len(matches) > 1:
+        raise ValueError(
+            "Matched "
+            f"{len(matches)} create-record rows for RK_raw={get_list_row.rk_raw}, "
+            f"normal={get_list_row.vs_normal_name}, night={get_list_row.vs_night_name}"
+        )
+    return matches[0]
+
+
 def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
+    _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -86,6 +166,7 @@ def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses
 
 
 def update_pipeline_status(workbook_path: Path, source_sheet: str, case_id: str, status_updates: Dict[str, str]) -> None:
+    _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -107,7 +188,19 @@ def build_case_manifests(
     server_root: Path,
     mode: str,
 ) -> List[CaseManifest]:
-    rows = load_pipeline_cases(workbook_path, source_sheet=source_sheet, allowed_statuses=allowed_statuses)
+    if source_sheet == "获取列表":
+        create_record_rows = load_pipeline_cases(
+            workbook_path,
+            source_sheet="创建记录",
+            allowed_statuses=allowed_statuses,
+        )
+        rows = [
+            _match_create_record_rows(create_record_rows, row)
+            for row in _load_get_list_rows(workbook_path, source_sheet)
+        ]
+    else:
+        rows = load_pipeline_cases(workbook_path, source_sheet=source_sheet, allowed_statuses=allowed_statuses)
+
     manifests: List[CaseManifest] = []
     for row in rows:
         manifests.append(
@@ -161,6 +254,7 @@ def load_confirmed_cases(
 
 
 def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[ReviewSheetRow]) -> None:
+    _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     if review_sheet in workbook.sheetnames:
         sheet = workbook[review_sheet]
@@ -223,6 +317,7 @@ def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Di
 
 
 def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str) -> None:
+    _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     source = workbook[source_sheet]
     review = workbook[review_sheet]
