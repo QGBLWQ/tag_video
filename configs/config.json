@@ -1,0 +1,57 @@
+{
+  "input_dir": "videos",
+  "output_dir": "output",
+  "paths": {
+    "compressed_dir": "output/compressed",
+    "intermediate_dir": "output/intermediate",
+    "review_file": "output/review/review.txt"
+  },
+  "compression": {
+    "width": 960,
+    "video_bitrate": "700k",
+    "audio_bitrate": "96k",
+    "fps": 12
+  },
+  "provider": {
+    "name": "qwen_dashscope",
+    "model": "qwen3.6-flash",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "api_key": "sk-9a4ff54f43fe49548ad5e8283bc3b5ca",
+    "fps": 2
+  },
+  "prompt_template": {
+    "system": "你是一个中文视频理解助手。请根据视频内容和标签规则输出结构化标签。",
+    "ignore_opening_instruction": "画面描述必须忽略视频开头固定出现的手持手机展示时间特写，不得将其写入描述。",
+    "scene_description_instruction": "画面描述应从真正进入测试场景之后开始，可以更详细，重点描述光亮变化、场景细节、主体运动和画面变化。",
+    "single_choice_fields": {
+      "安装方式": ["胸前", "头戴", "手持", "车把", "其他"],
+      "运动模式": ["步行", "跑步", "骑行", "静止", "其他"],
+      "运镜方式": ["固定镜头", "平移", "推进", "拉远", "跟拍", "其他"],
+      "光源": ["自然光", "室内灯光", "逆光", "弱光", "混合光", "其他"]
+    },
+    "multi_choice_fields": {
+      "画面特征": ["纹理_高低频", "重复纹理", "边缘特征_强弱", "运动对焦", "人物肤色", "景深远近切换", "反射与透视"],
+      "影像表达": ["风景录像", "建筑空间", "美食游街", "运动跟拍", "主题拍摄", "赛事舞台", "多目标分散运镜", "交互叙事"]
+    }
+  },
+  "concurrency": {
+    "compression_workers": 2,
+    "provider_workers": 2,
+    "max_retries": 3,
+    "retry_backoff_seconds": 2,
+    "retry_backoff_multiplier": 2
+  },
+  "gui_pipeline": {
+    "source_sheet": "创建记录",
+    "review_sheet": "审核结果",
+    "mode": "OV50H40_Action5Pro_DCG HDR",
+    "allowed_statuses": ["", "queued", "failed"],
+    "local_root": "cases",
+    "server_root": "server_cases",
+    "cache_root": "artifacts/cache",
+    "tagging_output_root": "artifacts/gui_pipeline",
+    "tagging_input_mode": "excel",
+    "tagging_input_root": "videos"
+  }
+}

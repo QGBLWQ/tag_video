@@ -128,6 +128,12 @@ def build_case_manifests(
     return manifests
 
 
+def load_confirmed_cases(
+    workbook_path: Path,
+    source_sheet: str,
+    case_key_column: str,
+    status_column: str,
+) -> List[ConfirmedCaseRow]:
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -216,6 +222,7 @@ def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Di
     return rows
 
 
+def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str) -> None:
     workbook = load_workbook(workbook_path)
     source = workbook[source_sheet]
     review = workbook[review_sheet]
