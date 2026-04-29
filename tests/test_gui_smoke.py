@@ -1236,3 +1236,77 @@ def test_launch_case_pipeline_gui_falls_back_when_gui_pipeline_missing(monkeypat
     assert calls["local_root"] == gui_app.DEFAULT_LOCAL_ROOT
     assert calls["server_root"] == gui_app.DEFAULT_SERVER_ROOT
     assert calls["mode"] == gui_app.DEFAULT_MODE
+
+
+# ── 以下测试验证新 launch_case_pipeline_gui (Task 9) ─────────────────────────
+
+
+def test_new_launch_loads_config_and_tag_options(monkeypatch, tmp_path: Path):
+    """新 launch 函数加载 config.json 和 tag_options.json 并传给 MainWindow。"""
+    import json
+    from video_tagging_assistant.gui import app as gui_app
+
+    config_data = {
+        "workbook_path": str(tmp_path / "records.xlsx"),
+        "mode": "OV50H40_Action5Pro_DCG HDR",
+        "adb_exe": "adb.exe",
+        "dut_root": "/mnt",
+        "local_case_root": str(tmp_path),
+        "server_upload_root": str(tmp_path / "server"),
+        "intermediate_dir": str(tmp_path / "intermediate"),
+        "provider": {"name": "mock", "model": "mock-model"},
+        "prompt_template": {"system": "describe"},
+    }
+    tag_options_data = {
+        "安装方式": ["手持"],
+        "运动模式": ["行走"],
+        "运镜方式": ["推U摇"],
+        "光源": ["正常"],
+        "画面特征": ["边缘"],
+        "影像表达": ["风景录像"],
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config_data), encoding="utf-8")
+    (tmp_path / "tag_options.json").write_text(
+        json.dumps(tag_options_data), encoding="utf-8"
+    )
+
+    captured = {}
+
+    class FakeMainWindow:
+        def __init__(self, config, tag_options):
+            captured["config"] = config
+            captured["tag_options"] = tag_options
+
+        def show(self):
+            captured["shown"] = True
+
+    class FakeApp:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, argv):
+            pass
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(gui_app, "QApplication", FakeApp)
+    monkeypatch.setattr(gui_app, "MainWindow", FakeMainWindow)
+    monkeypatch.setattr(
+        gui_app,
+        "_CONFIG_PATH",
+        tmp_path / "config.json",
+    )
+    monkeypatch.setattr(
+        gui_app,
+        "_TAG_OPTIONS_PATH",
+        tmp_path / "tag_options.json",
+    )
+
+    result = gui_app.launch_case_pipeline_gui()
+
+    assert captured["config"]["mode"] == "OV50H40_Action5Pro_DCG HDR"
+    assert captured["tag_options"]["安装方式"] == ["手持"]
+    assert captured.get("shown") is True
+    assert result == 0
