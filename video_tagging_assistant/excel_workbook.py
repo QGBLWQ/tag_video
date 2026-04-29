@@ -134,6 +134,34 @@ def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
     workbook.save(workbook_path)
 
 
+def _load_create_record_rows(workbook_path: Path, source_sheet: str) -> List[ExcelCaseRecord]:
+    workbook = load_workbook(workbook_path, data_only=True)
+    sheet = workbook[source_sheet]
+    headers = _header_map(sheet)
+    rows: List[ExcelCaseRecord] = []
+    for row_index in range(2, sheet.max_row + 1):
+        case_id = str(sheet.cell(row_index, headers["文件夹名"]).value or "").strip()
+        if not case_id:
+            continue
+        rows.append(
+            ExcelCaseRecord(
+                row_index=row_index,
+                case_id=case_id,
+                created_date=str(sheet.cell(row_index, headers["创建日期"]).value or "").strip(),
+                remark=str(sheet.cell(row_index, headers["备注"]).value or "").strip(),
+                raw_path=str(sheet.cell(row_index, headers["Raw存放路径"]).value or "").strip(),
+                vs_normal_path=str(sheet.cell(row_index, headers["VS_Nomal"]).value or "").strip(),
+                vs_night_path=str(sheet.cell(row_index, headers["VS_Night"]).value or "").strip(),
+                labels={
+                    "安装方式": str(sheet.cell(row_index, headers["安装方式"]).value or "").strip(),
+                    "运动模式": str(sheet.cell(row_index, headers["运动模式"]).value or "").strip(),
+                },
+                pipeline_status="",
+            )
+        )
+    return rows
+
+
 def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses: Set[str]) -> List[ExcelCaseRecord]:
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
@@ -189,10 +217,9 @@ def build_case_manifests(
     mode: str,
 ) -> List[CaseManifest]:
     if source_sheet == "获取列表":
-        create_record_rows = load_pipeline_cases(
+        create_record_rows = _load_create_record_rows(
             workbook_path,
             source_sheet="创建记录",
-            allowed_statuses=allowed_statuses,
         )
         rows = [
             _match_create_record_rows(create_record_rows, row)
@@ -338,4 +365,45 @@ def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str
         source.cell(source_row, source_headers["最终简介"]).value = manual_summary or auto_summary
         source.cell(source_row, source_headers["最终标签"]).value = manual_tags or auto_tags
 
+    workbook.save(workbook_path)
+
+
+@dataclass
+class TagResult:
+    """审核通过后，人工确认的完整标签结果。"""
+    install_method: str    # 安装方式（单选）
+    motion_mode: str       # 运动模式（单选）
+    camera_move: str       # 运镜元素（单选）
+    light_source: str      # 光源划分（单选）
+    image_feature: str     # 画面特征（从 AI 多选中人工选一）
+    image_expression: str  # 影像表达（从 AI 多选中人工选一）
+    review_status: str     # 固定值 "审核通过"
+
+
+def write_tag_result_to_create_record(
+    workbook_path: Path,
+    row_index: int,
+    tag_result: TagResult,
+) -> None:
+    """审核通过后，将人工确认的标签写回「创建记录」sheet 对应行。
+
+    _header_map() 返回 {header: 1-based-col-index}，直接用于 sheet.cell(column=...)。
+    workbook_path 必须是 .xlsx，不支持 .xlsm 写回。
+    """
+    _reject_xlsm_write(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook["创建记录"]
+    headers = _header_map(sheet)
+    field_map = {
+        "安装方式": tag_result.install_method,
+        "运动模式": tag_result.motion_mode,
+        "运镜元素": tag_result.camera_move,
+        "光源划分": tag_result.light_source,
+        "画面特征": tag_result.image_feature,
+        "影像表达": tag_result.image_expression,
+        "标签审核状态": tag_result.review_status,
+    }
+    for col_name, value in field_map.items():
+        if col_name in headers:
+            sheet.cell(row=row_index, column=headers[col_name]).value = value
     workbook.save(workbook_path)
