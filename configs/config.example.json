@@ -1,5 +1,5 @@
 {
-  "workbook_path": "C:/Users/19872/Desktop/work！/PC_A_采集记录表v2.1.xlsm",
+  "workbook_path": "C:/Users/<你的用户名>/Desktop/work！/PC_A_采集记录表v2.1.xlsm",
   "dji_nomal_dir": "E:/DV/采集建档V2.1/Dji_mp4/Nomal",
   "dji_night_dir": "E:/DV/采集建档V2.1/Dji_mp4/Night",
   "intermediate_dir": "output/intermediate",
@@ -7,7 +7,7 @@
   "adb_exe": "adb.exe",
   "dut_root": "/mnt/nvme/CapturedData",
   "local_case_root": "E:/DV/采集建档V2.1",
-  "server_upload_root": "\\\\10.10.10.164\\rk3668_capture",
+  "server_upload_root": "\\\\<服务器IP>\\<共享目录>",
   "mode": "OV50H40_Action5Pro_DCG HDR",
   "pc_id": "A",
   "input_dir": "videos",
@@ -28,7 +28,7 @@
     "model": "qwen3.6-flash",
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "api_key_env": "DASHSCOPE_API_KEY",
-    "api_key": "sk-9a4ff54f43fe49548ad5e8283bc3b5ca",
+    "api_key": "",
     "fps": 2
   },
   "prompt_template": {

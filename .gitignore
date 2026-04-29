@@ -2,3 +2,15 @@
 __pycache__/
 output/
 ~$PC_A_采集记录表v2.1.xlsm
+configs/config.json
+*.xlsm
+*.xlsx
+videos/
+ffmpeg-8.0.1-essentials_build/
+ffmpeg.exe
+adb.exe
+AdbWinApi.dll
+AdbWinUsbApi.dll
+deployment_package.rar
+deployment_package.pre_merge_backup/
+.claude/
