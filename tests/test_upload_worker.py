@@ -22,3 +22,16 @@ def test_upload_case_directory_copies_whole_case_when_missing(tmp_path):
 
     assert result.status == "uploaded"
     assert (server_case / "sub" / "1.txt").read_text(encoding="utf-8") == "ok"
+
+
+def test_upload_case_directory_emits_start_and_finish_events(tmp_path):
+    events = []
+    source = tmp_path / "case_A_0105"
+    source.mkdir()
+    (source / "a.txt").write_text("a", encoding="utf-8")
+    target = tmp_path / "server" / "case_A_0105"
+
+    upload_case_directory("case_A_0105", source, target, progress_callback=events.append)
+
+    assert events[0]["stage"] == "uploading"
+    assert events[-1]["stage"] == "uploaded"

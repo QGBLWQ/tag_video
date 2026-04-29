@@ -52,12 +52,28 @@ def wait_for_device() -> None:
     subprocess.run(["adb", "wait-for-device"], check=True)
 
 
-def run_resumable_pull(task: PullTask) -> Path:
+def _emit(progress_callback, payload):
+    if progress_callback is not None:
+        progress_callback(payload)
+
+
+def run_resumable_pull(task: PullTask, progress_callback=None) -> Path:
     final_dir = Path(task.move_dst)
     tmp_dir = final_dir.parent / f"{final_dir.name}_tmp"
+    _emit(progress_callback, {"case_id": task.case_id, "stage": "pulling", "message": "counting remote files"})
     remote_count = count_remote_files(task.device_path)
 
     if validate_pull_counts(remote_count, final_dir):
+        _emit(
+            progress_callback,
+            {
+                "case_id": task.case_id,
+                "stage": "pull_done",
+                "message": "already complete",
+                "progress_current": remote_count,
+                "progress_total": remote_count,
+            },
+        )
         return final_dir
 
     if tmp_dir.exists():
@@ -69,4 +85,14 @@ def run_resumable_pull(task: PullTask) -> Path:
     if not validate_pull_counts(remote_count, final_dir):
         raise RuntimeError(f"pull validation failed for {task.case_id}")
 
+    _emit(
+        progress_callback,
+        {
+            "case_id": task.case_id,
+            "stage": "pull_done",
+            "message": "pull complete",
+            "progress_current": remote_count,
+            "progress_total": remote_count,
+        },
+    )
     return final_dir

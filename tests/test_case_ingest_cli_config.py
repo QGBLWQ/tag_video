@@ -203,6 +203,21 @@ def test_case_ingest_cli_keeps_legacy_argument_mode(monkeypatch, capsys):
     assert "Uploaded 1 cases" in out
 
 
+def test_case_pipeline_gui_command_parses(monkeypatch):
+    from video_tagging_assistant import cli
+
+    called = {}
+
+    def fake_launch(workbook_path=None):
+        called["workbook_path"] = workbook_path
+        return 0
+
+    monkeypatch.setattr("video_tagging_assistant.cli.launch_case_pipeline_gui", fake_launch)
+    exit_code = cli.main(["case-pipeline-gui"])
+    assert exit_code == 0
+    assert called["workbook_path"] is None
+
+
 def test_case_ingest_example_config_contains_expected_keys():
     text = Path("configs/case_ingest.example.json").read_text(encoding="utf-8")
 

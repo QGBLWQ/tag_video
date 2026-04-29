@@ -5,12 +5,18 @@ from pathlib import Path
 from video_tagging_assistant.case_ingest_models import UploadResult
 
 
-def upload_case_directory(case_id: str, local_case_dir: Path, server_case_dir: Path) -> UploadResult:
+def upload_case_directory(case_id: str, local_case_dir: Path, server_case_dir: Path, progress_callback=None) -> UploadResult:
+    if progress_callback is not None:
+        progress_callback({"case_id": case_id, "stage": "uploading", "message": "upload started"})
     if server_case_dir.exists():
+        if progress_callback is not None:
+            progress_callback({"case_id": case_id, "stage": "uploaded", "message": "server case already exists"})
         return UploadResult(case_id=case_id, status="upload_skipped_exists", message="server case already exists")
 
     server_case_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(local_case_dir, server_case_dir)
+    if progress_callback is not None:
+        progress_callback({"case_id": case_id, "stage": "uploaded", "message": "upload complete"})
     return UploadResult(case_id=case_id, status="uploaded")
 
 

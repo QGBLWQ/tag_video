@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from video_tagging_assistant.pipeline_models import PipelineEvent, RuntimeStage
+
 
 @dataclass
 class VideoTask:

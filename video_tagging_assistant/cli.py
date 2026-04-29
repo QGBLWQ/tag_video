@@ -5,6 +5,7 @@ from pathlib import Path
 from video_tagging_assistant.bat_parser import group_case_tasks
 from video_tagging_assistant.case_ingest_orchestrator import run_case_ingest
 from video_tagging_assistant.config import load_case_ingest_config, load_config
+from video_tagging_assistant.gui.app import launch_case_pipeline_gui
 from video_tagging_assistant.orchestrator import run_batch
 from video_tagging_assistant.providers.mock_provider import MockVideoTagProvider
 from video_tagging_assistant.providers.openai_compatible import OpenAICompatibleVideoTagProvider
@@ -45,6 +46,9 @@ def main(argv=None) -> int:
     case_ingest_parser.add_argument("--server-root")
     case_ingest_parser.add_argument("--skip-upload", action="store_true")
 
+    case_pipeline_parser = subparsers.add_parser("case-pipeline-gui")
+    case_pipeline_parser.add_argument("--workbook")
+
     args = parser.parse_args(argv)
 
     if args.command == "case-ingest":
@@ -79,6 +83,9 @@ def main(argv=None) -> int:
         print(f"Skipped {summary['skipped']} cases")
         print(f"Failed {summary['failed']} cases")
         return 0
+
+    if args.command == "case-pipeline-gui":
+        return launch_case_pipeline_gui(workbook_path=getattr(args, "workbook", None))
 
     if not args.config:
         parser.error("--config is required unless using case-ingest")

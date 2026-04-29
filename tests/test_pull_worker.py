@@ -55,3 +55,24 @@ def test_run_resumable_pull_uses_move_dst_as_final_directory(monkeypatch, tmp_pa
 
     assert result == move_dst
     assert (move_dst / "1.txt").exists()
+
+
+def test_run_resumable_pull_emits_progress_events(tmp_path, monkeypatch):
+    events = []
+    final_dir = tmp_path / "case_A_0105_RK_raw_117"
+
+    monkeypatch.setattr("video_tagging_assistant.pull_worker.count_remote_files", lambda path: 2)
+    monkeypatch.setattr("video_tagging_assistant.pull_worker.validate_pull_counts", lambda remote_count, path: True)
+    monkeypatch.setattr("video_tagging_assistant.pull_worker.subprocess.run", lambda *args, **kwargs: None)
+
+    task = PullTask(
+        case_id="case_A_0105",
+        device_path="/mnt/nvme/CapturedData/117",
+        local_name="case_A_0105_RK_raw_117",
+        move_src=str(tmp_path / "case_A_0105_RK_raw_117"),
+        move_dst=str(final_dir),
+    )
+
+    run_resumable_pull(task, progress_callback=events.append)
+
+    assert any(event["stage"] == "pulling" for event in events)

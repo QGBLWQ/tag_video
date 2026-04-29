@@ -1,9 +1,10 @@
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from openpyxl import load_workbook
 
 from video_tagging_assistant.excel_models import ConfirmedCaseRow, ReviewSheetRow
+from video_tagging_assistant.pipeline_models import ExcelCaseRecord
 
 REVIEW_HEADERS = [
     "文件夹名",
@@ -24,9 +25,78 @@ REVIEW_HEADERS = [
     "归档目标路径",
 ]
 
+PIPELINE_RUNTIME_HEADERS = [
+    "pipeline_status",
+    "tag_status",
+    "review_status",
+    "pull_status",
+    "copy_status",
+    "upload_status",
+    "last_error",
+    "run_id",
+    "updated_at",
+]
+
 
 def _header_map(sheet) -> Dict[str, int]:
     return {str(cell.value).strip(): idx + 1 for idx, cell in enumerate(sheet[1]) if cell.value is not None}
+
+
+def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
+    workbook = load_workbook(workbook_path)
+    sheet = workbook[source_sheet]
+    headers = _header_map(sheet)
+    next_column = sheet.max_column + 1
+    for header in PIPELINE_RUNTIME_HEADERS:
+        if header not in headers:
+            sheet.cell(1, next_column).value = header
+            next_column += 1
+    workbook.save(workbook_path)
+
+
+def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses: Set[str]) -> List[ExcelCaseRecord]:
+    workbook = load_workbook(workbook_path)
+    sheet = workbook[source_sheet]
+    headers = _header_map(sheet)
+    rows: List[ExcelCaseRecord] = []
+    for row_index in range(2, sheet.max_row + 1):
+        case_id = str(sheet.cell(row_index, headers["文件夹名"]).value or "").strip()
+        if not case_id:
+            continue
+        status = str(sheet.cell(row_index, headers["pipeline_status"]).value or "").strip()
+        if status not in allowed_statuses:
+            continue
+        rows.append(
+            ExcelCaseRecord(
+                row_index=row_index,
+                case_id=case_id,
+                created_date=str(sheet.cell(row_index, headers["创建日期"]).value or "").strip(),
+                remark=str(sheet.cell(row_index, headers["备注"]).value or "").strip(),
+                raw_path=str(sheet.cell(row_index, headers["Raw存放路径"]).value or "").strip(),
+                vs_normal_path=str(sheet.cell(row_index, headers["VS_Nomal"]).value or "").strip(),
+                vs_night_path=str(sheet.cell(row_index, headers["VS_Night"]).value or "").strip(),
+                labels={
+                    "安装方式": str(sheet.cell(row_index, headers["安装方式"]).value or "").strip(),
+                    "运动模式": str(sheet.cell(row_index, headers["运动模式"]).value or "").strip(),
+                },
+                pipeline_status=status,
+            )
+        )
+    return rows
+
+
+def update_pipeline_status(workbook_path: Path, source_sheet: str, case_id: str, status_updates: Dict[str, str]) -> None:
+    workbook = load_workbook(workbook_path)
+    sheet = workbook[source_sheet]
+    headers = _header_map(sheet)
+    for row_index in range(2, sheet.max_row + 1):
+        current_case_id = str(sheet.cell(row_index, headers["文件夹名"]).value or "").strip()
+        if current_case_id != case_id:
+            continue
+        for key, value in status_updates.items():
+            sheet.cell(row_index, headers[key]).value = value
+        break
+    workbook.save(workbook_path)
 
 
 def load_confirmed_cases(
