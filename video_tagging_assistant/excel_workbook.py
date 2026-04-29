@@ -4,7 +4,7 @@ from typing import Dict, List, Set
 from openpyxl import load_workbook
 
 from video_tagging_assistant.excel_models import ConfirmedCaseRow, ReviewSheetRow
-from video_tagging_assistant.pipeline_models import ExcelCaseRecord
+from video_tagging_assistant.pipeline_models import CaseManifest, ExcelCaseRecord
 
 REVIEW_HEADERS = [
     "文件夹名",
@@ -99,12 +99,35 @@ def update_pipeline_status(workbook_path: Path, source_sheet: str, case_id: str,
     workbook.save(workbook_path)
 
 
-def load_confirmed_cases(
+def build_case_manifests(
     workbook_path: Path,
     source_sheet: str,
-    case_key_column: str,
-    status_column: str,
-) -> List[ConfirmedCaseRow]:
+    allowed_statuses: Set[str],
+    local_root: Path,
+    server_root: Path,
+    mode: str,
+) -> List[CaseManifest]:
+    rows = load_pipeline_cases(workbook_path, source_sheet=source_sheet, allowed_statuses=allowed_statuses)
+    manifests: List[CaseManifest] = []
+    for row in rows:
+        manifests.append(
+            CaseManifest(
+                case_id=row.case_id,
+                row_index=row.row_index,
+                created_date=row.created_date,
+                mode=mode,
+                raw_path=Path(row.raw_path),
+                vs_normal_path=Path(row.vs_normal_path),
+                vs_night_path=Path(row.vs_night_path),
+                local_case_root=Path(local_root) / mode / row.created_date / row.case_id,
+                server_case_dir=Path(server_root) / mode / row.created_date / row.case_id,
+                remark=row.remark,
+                labels=row.labels,
+            )
+        )
+    return manifests
+
+
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -172,7 +195,27 @@ def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[Review
     workbook.save(workbook_path)
 
 
-def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str) -> None:
+def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Dict[str, str]]:
+    workbook = load_workbook(workbook_path)
+    sheet = workbook[review_sheet]
+    headers = _header_map(sheet)
+    rows: List[Dict[str, str]] = []
+    for row_index in range(2, sheet.max_row + 1):
+        decision = str(sheet.cell(row_index, headers["审核结论"]).value or "").strip()
+        if decision not in {"审核通过", "修改后通过"}:
+            continue
+        rows.append(
+            {
+                "case_id": str(sheet.cell(row_index, headers["文件夹名"]).value or "").strip(),
+                "review_decision": decision,
+                "manual_summary": str(sheet.cell(row_index, headers["人工修订简介"]).value or "").strip(),
+                "manual_tags": str(sheet.cell(row_index, headers["人工修订标签"]).value or "").strip(),
+                "review_note": str(sheet.cell(row_index, headers["审核备注"]).value or "").strip(),
+            }
+        )
+    return rows
+
+
     workbook = load_workbook(workbook_path)
     source = workbook[source_sheet]
     review = workbook[review_sheet]

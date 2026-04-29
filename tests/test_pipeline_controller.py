@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from video_tagging_assistant.pipeline_controller import PipelineController
-from video_tagging_assistant.pipeline_models import CaseManifest
+from video_tagging_assistant.pipeline_models import CaseManifest, RuntimeStage
 
 
 def build_manifest(tmp_path: Path, case_id: str) -> CaseManifest:
@@ -66,3 +66,73 @@ def test_execute_approved_case_runs_pull_copy_upload_in_order(tmp_path: Path):
         ("copy", "case_A_0105"),
         ("upload", "case_A_0105"),
     ]
+
+
+def test_controller_emits_stage_events(tmp_path: Path):
+    events = []
+    controller = PipelineController(event_callback=events.append)
+    manifest = build_manifest(tmp_path, "case_A_0105")
+
+    controller.register_manifests([manifest])
+    controller.mark_tagging_finished("case_A_0105")
+    controller.approve_case("case_A_0105")
+
+    assert any(event.case_id == "case_A_0105" and event.stage == RuntimeStage.AWAITING_REVIEW for event in events)
+    assert any(event.case_id == "case_A_0105" and event.stage == RuntimeStage.REVIEW_PASSED for event in events)
+
+
+def test_controller_does_not_enqueue_same_case_twice(tmp_path: Path):
+    controller = PipelineController()
+    manifest = build_manifest(tmp_path, "case_A_0105")
+
+    controller.register_manifests([manifest])
+    controller.mark_tagging_finished("case_A_0105")
+    controller.approve_case("case_A_0105")
+    controller.approve_case("case_A_0105")
+
+    first = controller.dequeue_execution_case()
+    assert first.case_id == "case_A_0105"
+    assert controller.has_execution_case() is False
+
+
+def test_execute_case_emits_pull_copy_upload_and_complete(tmp_path: Path):
+    events = []
+    calls = []
+    controller = PipelineController(
+        pull_runner=lambda task, progress_callback=None: calls.append("pull"),
+        copy_runner=lambda tasks: calls.append("copy"),
+        upload_runner=lambda case_id, local_case_dir, server_case_dir, progress_callback=None: calls.append("upload"),
+        event_callback=events.append,
+    )
+    manifest = build_manifest(tmp_path, "case_A_0105")
+    controller.register_manifests([manifest])
+    controller.mark_tagging_finished(manifest.case_id)
+    controller.approve_case(manifest.case_id)
+
+    controller.run_next_execution_case()
+
+    assert calls == ["pull", "copy", "upload"]
+    assert [event.stage for event in events if event.case_id == manifest.case_id][-4:] == [
+        RuntimeStage.PULLING,
+        RuntimeStage.COPYING,
+        RuntimeStage.UPLOADING,
+        RuntimeStage.COMPLETED,
+    ]
+
+
+def test_execute_case_marks_failed_when_runner_raises(tmp_path: Path):
+    events = []
+    controller = PipelineController(
+        pull_runner=lambda task, progress_callback=None: (_ for _ in ()).throw(RuntimeError("boom")),
+        event_callback=events.append,
+    )
+    manifest = build_manifest(tmp_path, "case_A_0105")
+    controller.register_manifests([manifest])
+    controller.mark_tagging_finished(manifest.case_id)
+    controller.approve_case(manifest.case_id)
+
+    controller.run_next_execution_case()
+
+    assert controller.get_case_state(manifest.case_id).stage == RuntimeStage.FAILED
+    assert events[-1].stage == RuntimeStage.FAILED
+    assert "boom" in events[-1].message
