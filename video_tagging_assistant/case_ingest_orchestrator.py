@@ -1,4 +1,7 @@
+import shutil
+import subprocess
 import threading
+from pathlib import Path
 from queue import Queue
 from typing import Callable, Iterable
 
@@ -105,3 +108,49 @@ def run_case_ingest(
         "failed": failed,
         "upload_results": upload_results,
     }
+
+
+def pull_case(manifest, config: dict) -> None:
+    """执行单个 case 的 adb pull 操作。
+
+    adb pull {dut_root}/{rk_suffix} {local_case_root}/{case_id}_RK_raw_{rk_suffix}
+    """
+    rk_suffix = manifest.raw_path.name
+    dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    dest.mkdir(parents=True, exist_ok=True)
+    remote_path = f"{config['dut_root']}/{rk_suffix}"
+    subprocess.run(
+        [config["adb_exe"], "pull", remote_path, str(dest)],
+        check=True,
+    )
+
+
+def move_case(manifest, config: dict) -> None:
+    """执行单个 case 的本地文件 move 操作。
+
+    将 {local_case_root}/{case_id}_RK_raw_{rk_suffix}
+    移动到 {local_case_root}/{mode}/{created_date}/{case_id}/{case_id}_RK_raw_{rk_suffix}
+    """
+    rk_suffix = manifest.raw_path.name
+    local_root = Path(config["local_case_root"])
+    src = local_root / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    dest_dir = local_root / config["mode"] / manifest.created_date / manifest.case_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    shutil.move(str(src), str(dest))
+
+
+def upload_case(manifest, config: dict) -> None:
+    """执行单个 case 的服务器 upload 操作。
+
+    将 {local_case_root}/{mode}/{created_date}/{case_id}
+    整目录复制到 {server_upload_root}/{mode}/{created_date}/{case_id}
+    目标已存在时抛出 RuntimeError。
+    """
+    local_root = Path(config["local_case_root"])
+    server_root = Path(config["server_upload_root"])
+    src = local_root / config["mode"] / manifest.created_date / manifest.case_id
+    dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
+    if dest.exists():
+        raise RuntimeError(f"Upload destination already exists: {dest}")
+    shutil.copytree(str(src), str(dest))
