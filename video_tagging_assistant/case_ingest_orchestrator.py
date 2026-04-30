@@ -117,7 +117,7 @@ def pull_case(manifest, config: dict) -> None:
     """
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    dest.mkdir(parents=True, exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     remote_path = f"{config['dut_root']}/{rk_suffix}"
     subprocess.run(
         [config["adb_exe"], "pull", remote_path, str(dest)],

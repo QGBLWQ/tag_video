@@ -75,6 +75,8 @@ class _TaggingWorker(QThread):
                 prompt_template=self._config["prompt_template"],
                 mode="fresh",
                 event_callback=_on_event,
+                concurrency=self._config.get("concurrency", {}),
+                compression_config=self._config.get("compression"),
             )
         except Exception as exc:
             self.error.emit(f"打标批次错误: {exc}")
