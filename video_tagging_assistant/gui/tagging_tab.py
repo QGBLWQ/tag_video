@@ -9,6 +9,7 @@
 list 每项为 {"manifest": CaseManifest, "ai_result": dict, "missing": bool}。
 """
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -129,6 +130,7 @@ class TaggingTab(QWidget):
         self._config = config
         self._manifests: list = []
         self._worker: Optional[_TaggingWorker] = None
+        self._xlsx_writeback_path: Optional[Path] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -210,6 +212,18 @@ class TaggingTab(QWidget):
         except Exception as exc:
             self._error_list.addItem(f"加载失败: {exc}")
             return
+
+        # Auto-create xlsx copy when xlsm is loaded so write-backs go to xlsx
+        if wb_path.suffix.lower() == ".xlsm":
+            xlsx_path = wb_path.with_suffix(".xlsx")
+            if not xlsx_path.exists():
+                try:
+                    shutil.copy2(str(wb_path), str(xlsx_path))
+                except Exception as exc:
+                    self._error_list.addItem(f"创建 xlsx 副本失败: {exc}")
+            self._xlsx_writeback_path = xlsx_path
+        else:
+            self._xlsx_writeback_path = wb_path
 
         self._case_list.clear()
         for manifest in self._manifests:

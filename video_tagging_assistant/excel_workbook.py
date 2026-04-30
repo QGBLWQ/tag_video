@@ -1,4 +1,6 @@
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -549,3 +551,56 @@ def upsert_create_record_row(
             sheet.cell(row=target_row, column=headers[col_name]).value = value
 
     workbook.save(workbook_path)
+
+
+def write_case_txt(manifest: "CaseManifest", tag_result: TagResult) -> Path:
+    """Write a GBK-encoded txt file for an approved case into manifest.local_case_root.
+
+    Filename: {case_id}_{first_10_chars_of_scene_description}.txt
+    """
+    d = datetime.strptime(manifest.created_date, "%Y%m%d")
+    date_str = f"{d.year}/{d.month}/{d.day}"
+
+    case_id = manifest.case_id
+    seq_num = int(case_id.rsplit("_", 1)[-1]) - 1
+
+    server_case = str(manifest.server_case_dir).replace("/", "\\")
+    vs_nomal = f"{server_case}\\{case_id}_{manifest.vs_normal_path.name}"
+    vs_night = f"{server_case}\\{case_id}_night_{manifest.vs_night_path.name}"
+    raw_path = f"{server_case}\\{case_id}_RK_raw_{manifest.raw_path.name}"
+
+    lines = [
+        date_str,
+        f"序号: {seq_num}",
+        f"文件夹名: {case_id}",
+        f"备注: {tag_result.scene_description}",
+        f"创建日期: {manifest.created_date}",
+        "Null: ",
+        "数量: 1",
+        f"安装方式: {tag_result.install_method}",
+        f"运动模式: {tag_result.motion_mode}",
+        f"运镜元素: {tag_result.camera_move}",
+        f"光源划分: {tag_result.light_source}",
+        f"画面特征: {tag_result.image_feature}",
+        f"影像表达: {tag_result.image_expression}",
+        f"Raw存放路径: {raw_path}",
+        f"设备编号: {tag_result.device_info.get('设备编号', '')}",
+        f"模组型号: {tag_result.device_info.get('模组型号', '')}",
+        f"芯片: {tag_result.device_info.get('芯片', '')}",
+        f"采集模式: {tag_result.device_info.get('采集模式', '')}",
+        f"bit位: {tag_result.device_info.get('bit位', '')}",
+        f"帧率: {tag_result.device_info.get('帧率', '')}",
+        f"其他信息: {tag_result.device_info.get('其他信息', '')}",
+        f"VS_Nomal: {vs_nomal}",
+        f"VS_Night: {vs_night}",
+    ]
+
+    desc_clean = re.sub(r'[\\/:*?"<>|]', "", tag_result.scene_description)[:10]
+    filename = f"{case_id}_{desc_clean}.txt"
+
+    output_dir = manifest.local_case_root
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / filename
+    with open(out_path, "w", encoding="gbk", errors="replace") as f:
+        f.write("\n".join(lines))
+    return out_path
