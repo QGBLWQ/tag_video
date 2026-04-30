@@ -185,8 +185,8 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
     src = local_root / config["mode"] / manifest.created_date / manifest.case_id
-    dest = server_root / manifest.created_date / manifest.case_id
-    if dest.exists():
-        raise RuntimeError(f"Upload destination already exists: {dest}")
+    dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
+    if dest.exists() and any(f.is_file() for f in dest.rglob("*")):
+        return  # already uploaded
     dest.parent.mkdir(parents=True, exist_ok=True)
     _copytree_with_progress(src, dest, progress_cb)
