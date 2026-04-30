@@ -161,18 +161,32 @@ def move_case(manifest, config: dict) -> None:
             )
 
 
-def _copytree_with_progress(src: Path, dest: Path, progress_cb=None) -> None:
+def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 4) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     files = [f for f in src.rglob("*") if f.is_file()]
     if not files:
         raise RuntimeError(f"upload 源目录为空或不存在: {src}")
     total = len(files)
-    for i, file in enumerate(files):
+    counter = [0]
+    lock = threading.Lock()
+
+    def _copy_one(file: Path):
         rel = file.relative_to(src)
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(str(file), str(target))
+        with lock:
+            counter[0] += 1
+            n = counter[0]
         if progress_cb:
-            progress_cb(i + 1, total, file.name)
+            progress_cb(n, total, file.name)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_copy_one, f) for f in files]
+        for fut in as_completed(futures):
+            fut.result()  # re-raise any exception
 
 
 def upload_case(manifest, config: dict, progress_cb=None) -> None:
