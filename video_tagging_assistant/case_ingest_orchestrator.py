@@ -113,33 +113,17 @@ def run_case_ingest(
 def pull_case(manifest, config: dict) -> None:
     """执行单个 case 的 adb pull 操作。
 
-    先 pull 到临时目录（让 adb 在其中创建 rk_suffix 子目录），
-    再把子目录 rename 到最终位置，避免路径嵌套或 "Not a directory" 问题。
+    adb pull {dut_root}/{rk_suffix}/. {local_case_root}/{case_id}_RK_raw_{rk_suffix}
+    用 /. 拉取目录内容而非目录本身，避免 adb 将远端目录嵌套进已存在的目标目录。
     """
     rk_suffix = manifest.raw_path.name
-    local_root = Path(config["local_case_root"])
-    local_root.mkdir(parents=True, exist_ok=True)
-    dest = local_root / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    tmp = local_root / f"_pull_tmp_{manifest.case_id}"
-    if tmp.exists():
-        shutil.rmtree(str(tmp))
-    tmp.mkdir(parents=True)
-    remote_path = f"{config['dut_root']}/{rk_suffix}"
+    dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    dest.mkdir(parents=True, exist_ok=True)
+    remote_path = f"{config['dut_root']}/{rk_suffix}/."
     subprocess.run(
-        [config["adb_exe"], "pull", remote_path, str(tmp)],
+        [config["adb_exe"], "pull", remote_path, str(dest)],
         check=True,
     )
-    # adb puts remote dir inside tmp: tmp/rk_suffix/ → rename to dest
-    nested = tmp / rk_suffix
-    if not nested.is_dir():
-        shutil.rmtree(str(tmp), ignore_errors=True)
-        raise RuntimeError(
-            f"adb pull 后未找到预期目录 {nested}，请检查 dut_root 和 rk_suffix 配置"
-        )
-    if dest.exists():
-        shutil.rmtree(str(dest))
-    shutil.move(str(nested), str(dest))
-    shutil.rmtree(str(tmp), ignore_errors=True)
 
 
 def move_case(manifest, config: dict) -> None:
