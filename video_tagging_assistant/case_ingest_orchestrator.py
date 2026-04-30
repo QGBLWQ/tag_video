@@ -129,16 +129,31 @@ def pull_case(manifest, config: dict) -> None:
 def move_case(manifest, config: dict) -> None:
     """执行单个 case 的本地文件 move 操作。
 
-    将 {local_case_root}/{case_id}_RK_raw_{rk_suffix}
-    移动到 {local_case_root}/{mode}/{created_date}/{case_id}/{case_id}_RK_raw_{rk_suffix}
+    将以下文件/目录移入 {local_case_root}/{mode}/{created_date}/{case_id}/:
+      - {case_id}_RK_raw_{rk_suffix}   (adb pull 临时目录)
+      - {case_id}_{vs_normal.name}     (DJI 普通视频)
+      - {case_id}_night_{vs_night.name} (DJI 夜间视频)
     """
     rk_suffix = manifest.raw_path.name
+    case_id = manifest.case_id
     local_root = Path(config["local_case_root"])
-    src = local_root / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    dest_dir = local_root / config["mode"] / manifest.created_date / manifest.case_id
+    dest_dir = local_root / config["mode"] / manifest.created_date / case_id
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    shutil.move(str(src), str(dest))
+
+    shutil.move(
+        str(local_root / f"{case_id}_RK_raw_{rk_suffix}"),
+        str(dest_dir / f"{case_id}_RK_raw_{rk_suffix}"),
+    )
+    if manifest.vs_normal_path.exists():
+        shutil.move(
+            str(manifest.vs_normal_path),
+            str(dest_dir / f"{case_id}_{manifest.vs_normal_path.name}"),
+        )
+    if manifest.vs_night_path.exists():
+        shutil.move(
+            str(manifest.vs_night_path),
+            str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
+        )
 
 
 def upload_case(manifest, config: dict) -> None:

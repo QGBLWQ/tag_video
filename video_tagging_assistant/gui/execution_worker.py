@@ -1,4 +1,5 @@
 import queue
+import threading
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QApplication
@@ -10,7 +11,11 @@ _SENTINEL = None
 
 
 class ExecutionWorker(QThread):
-    """串行执行 pull→move→upload 的后台线程。
+    """pull/move 在主工作线程串行执行；upload 在独立后台线程并发执行。
+
+    流程：
+        主循环：case1.pull → case1.move → enqueue(case1) → case2.pull → case2.move → ...
+        upload线程：                    case1.upload              case2.upload ...
 
     信号：
         status_changed(case_id, step, status, message)
@@ -24,6 +29,7 @@ class ExecutionWorker(QThread):
         super().__init__(parent)
         self._config = config
         self._queue: queue.Queue = queue.Queue()
+        self._upload_queue: queue.Queue = queue.Queue()
 
     def enqueue(self, manifest: CaseManifest) -> None:
         """将 manifest 加入执行队列（线程安全）。"""
@@ -34,7 +40,6 @@ class ExecutionWorker(QThread):
         self._queue.put(_SENTINEL)
 
     def wait(self, msecs=None) -> bool:
-        """等待线程结束，并在返回前处理挂起的 Qt 事件（确保跨线程信号送达槽函数）。"""
         result = super().wait() if msecs is None else super().wait(msecs)
         app = QApplication.instance()
         if app is not None:
@@ -42,23 +47,38 @@ class ExecutionWorker(QThread):
         return result
 
     def run(self) -> None:
+        upload_thread = threading.Thread(target=self._upload_loop, daemon=True)
+        upload_thread.start()
+
         while True:
             item = self._queue.get()
             if item is _SENTINEL:
                 break
-            self._process(item)
+            self._pull_and_move(item)
 
-    def _process(self, manifest: CaseManifest) -> None:
-        steps = [
-            ("pull", pull_case),
-            ("move", move_case),
-            ("upload", upload_case),
-        ]
-        for step_name, step_fn in steps:
+        self._upload_queue.put(_SENTINEL)
+        upload_thread.join()
+
+    def _pull_and_move(self, manifest: CaseManifest) -> None:
+        for step_name, step_fn in [("pull", pull_case), ("move", move_case)]:
             self.status_changed.emit(manifest.case_id, step_name, "started", "")
             try:
                 step_fn(manifest, self._config)
                 self.status_changed.emit(manifest.case_id, step_name, "completed", "")
             except Exception as exc:
                 self.status_changed.emit(manifest.case_id, step_name, "failed", str(exc))
-                return  # stop remaining steps for this case; continue queue
+                return
+        self._upload_queue.put(manifest)
+
+    def _upload_loop(self) -> None:
+        while True:
+            item = self._upload_queue.get()
+            if item is _SENTINEL:
+                break
+            manifest = item
+            self.status_changed.emit(manifest.case_id, "upload", "started", "")
+            try:
+                upload_case(manifest, self._config)
+                self.status_changed.emit(manifest.case_id, "upload", "completed", "")
+            except Exception as exc:
+                self.status_changed.emit(manifest.case_id, "upload", "failed", str(exc))
