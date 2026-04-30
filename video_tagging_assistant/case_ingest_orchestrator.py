@@ -169,4 +169,5 @@ def upload_case(manifest, config: dict) -> None:
     dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
     if dest.exists():
         raise RuntimeError(f"Upload destination already exists: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(str(src), str(dest))
