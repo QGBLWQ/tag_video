@@ -113,26 +113,42 @@ def run_case_ingest(
 def pull_case(manifest, config: dict) -> None:
     """执行单个 case 的 adb pull 操作。
 
-    adb pull {dut_root}/{rk_suffix}/. {local_case_root}/{case_id}_RK_raw_{rk_suffix}
-    用 /. 拉取目录内容而非目录本身，避免 adb 将远端目录嵌套进已存在的目标目录。
+    先 pull 到临时目录（让 adb 在其中创建 rk_suffix 子目录），
+    再把子目录 rename 到最终位置，避免路径嵌套或 "Not a directory" 问题。
     """
     rk_suffix = manifest.raw_path.name
-    dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    dest.mkdir(parents=True, exist_ok=True)
-    remote_path = f"{config['dut_root']}/{rk_suffix}/."
+    local_root = Path(config["local_case_root"])
+    local_root.mkdir(parents=True, exist_ok=True)
+    dest = local_root / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    tmp = local_root / f"_pull_tmp_{manifest.case_id}"
+    if tmp.exists():
+        shutil.rmtree(str(tmp))
+    tmp.mkdir(parents=True)
+    remote_path = f"{config['dut_root']}/{rk_suffix}"
     subprocess.run(
-        [config["adb_exe"], "pull", remote_path, str(dest)],
+        [config["adb_exe"], "pull", remote_path, str(tmp)],
         check=True,
     )
+    # adb puts remote dir inside tmp: tmp/rk_suffix/ → rename to dest
+    nested = tmp / rk_suffix
+    if not nested.is_dir():
+        shutil.rmtree(str(tmp), ignore_errors=True)
+        raise RuntimeError(
+            f"adb pull 后未找到预期目录 {nested}，请检查 dut_root 和 rk_suffix 配置"
+        )
+    if dest.exists():
+        shutil.rmtree(str(dest))
+    shutil.move(str(nested), str(dest))
+    shutil.rmtree(str(tmp), ignore_errors=True)
 
 
 def move_case(manifest, config: dict) -> None:
     """执行单个 case 的本地文件 move 操作。
 
     将以下文件/目录移入 {local_case_root}/{mode}/{created_date}/{case_id}/:
-      - {case_id}_RK_raw_{rk_suffix}   (adb pull 临时目录)
-      - {case_id}_{vs_normal.name}     (DJI 普通视频)
-      - {case_id}_night_{vs_night.name} (DJI 夜间视频)
+      - {case_id}_RK_raw_{rk_suffix}    (adb pull 临时目录)
+      - {case_id}_{vs_normal.name}      (DJI 普通视频)
+      - {case_id}_night_{vs_night.name} (DJI 夜间视频，可选)
     """
     rk_suffix = manifest.raw_path.name
     case_id = manifest.case_id
@@ -144,20 +160,27 @@ def move_case(manifest, config: dict) -> None:
         str(local_root / f"{case_id}_RK_raw_{rk_suffix}"),
         str(dest_dir / f"{case_id}_RK_raw_{rk_suffix}"),
     )
-    if manifest.vs_normal_path.exists():
+    if manifest.vs_normal_path and str(manifest.vs_normal_path) != ".":
+        if not manifest.vs_normal_path.exists():
+            raise FileNotFoundError(
+                f"DJI 普通视频不存在，请检查 dji_nomal_dir 配置: {manifest.vs_normal_path}"
+            )
         shutil.move(
             str(manifest.vs_normal_path),
             str(dest_dir / f"{case_id}_{manifest.vs_normal_path.name}"),
         )
-    if manifest.vs_night_path.exists():
-        shutil.move(
-            str(manifest.vs_night_path),
-            str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
-        )
+    if manifest.vs_night_path and str(manifest.vs_night_path) != ".":
+        if manifest.vs_night_path.exists():
+            shutil.move(
+                str(manifest.vs_night_path),
+                str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
+            )
 
 
 def _copytree_with_progress(src: Path, dest: Path, progress_cb=None) -> None:
     files = [f for f in src.rglob("*") if f.is_file()]
+    if not files:
+        raise RuntimeError(f"upload 源目录为空或不存在: {src}")
     total = len(files)
     for i, file in enumerate(files):
         rel = file.relative_to(src)
@@ -172,15 +195,13 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
     """执行单个 case 的服务器 upload 操作。
 
     将 {local_case_root}/{mode}/{created_date}/{case_id}
-    整目录复制到 {server_upload_root}/{created_date}/{case_id}
-
-    注意：server_upload_root 已包含 mode 路径，无需再拼接。
+    整目录复制到 {server_upload_root}/{mode}/{created_date}/{case_id}
     目标已存在时抛出 RuntimeError。
     """
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
     src = local_root / config["mode"] / manifest.created_date / manifest.case_id
-    dest = server_root / manifest.created_date / manifest.case_id
+    dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
     if dest.exists():
         raise RuntimeError(f"Upload destination already exists: {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
