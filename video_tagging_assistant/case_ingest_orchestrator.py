@@ -149,13 +149,13 @@ def move_case(manifest, config: dict) -> None:
             raise FileNotFoundError(
                 f"DJI 普通视频不存在，请检查 dji_nomal_dir 配置: {manifest.vs_normal_path}"
             )
-        shutil.move(
+        shutil.copy2(
             str(manifest.vs_normal_path),
             str(dest_dir / f"{case_id}_{manifest.vs_normal_path.name}"),
         )
     if manifest.vs_night_path and str(manifest.vs_night_path) != ".":
         if manifest.vs_night_path.exists():
-            shutil.move(
+            shutil.copy2(
                 str(manifest.vs_night_path),
                 str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
             )
