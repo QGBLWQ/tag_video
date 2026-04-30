@@ -156,18 +156,32 @@ def move_case(manifest, config: dict) -> None:
         )
 
 
-def upload_case(manifest, config: dict) -> None:
+def _copytree_with_progress(src: Path, dest: Path, progress_cb=None) -> None:
+    files = [f for f in src.rglob("*") if f.is_file()]
+    total = len(files)
+    for i, file in enumerate(files):
+        rel = file.relative_to(src)
+        target = dest / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(file), str(target))
+        if progress_cb:
+            progress_cb(i + 1, total, file.name)
+
+
+def upload_case(manifest, config: dict, progress_cb=None) -> None:
     """执行单个 case 的服务器 upload 操作。
 
     将 {local_case_root}/{mode}/{created_date}/{case_id}
-    整目录复制到 {server_upload_root}/{mode}/{created_date}/{case_id}
+    整目录复制到 {server_upload_root}/{created_date}/{case_id}
+
+    注意：server_upload_root 已包含 mode 路径，无需再拼接。
     目标已存在时抛出 RuntimeError。
     """
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
     src = local_root / config["mode"] / manifest.created_date / manifest.case_id
-    dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
+    dest = server_root / manifest.created_date / manifest.case_id
     if dest.exists():
         raise RuntimeError(f"Upload destination already exists: {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(str(src), str(dest))
+    _copytree_with_progress(src, dest, progress_cb)

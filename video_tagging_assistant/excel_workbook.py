@@ -321,7 +321,7 @@ def load_get_list_manifests(
                 vs_normal_path=Path(dji_nomal_dir) / normal if normal else Path(normal),
                 vs_night_path=Path(dji_night_dir) / night if night else Path(night),
                 local_case_root=Path(local_root) / mode / created_date / case_id,
-                server_case_dir=Path(server_root) / mode / created_date / case_id,
+                server_case_dir=Path(server_root) / created_date / case_id,
                 remark="",
                 labels={},
             )

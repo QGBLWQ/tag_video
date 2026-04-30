@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
+        self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
 
     def _on_tagging_complete(self, results: list) -> None:
         """打标完成：同步当前工作簿路径，解锁审核 Tab，切换过去，并加载 case 列表。"""

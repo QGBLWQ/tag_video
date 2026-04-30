@@ -24,6 +24,7 @@ class ExecutionWorker(QThread):
     """
 
     status_changed = pyqtSignal(str, str, str, str)
+    upload_progress = pyqtSignal(str, int, int, str)  # case_id, current, total, filename
 
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
@@ -78,7 +79,9 @@ class ExecutionWorker(QThread):
             manifest = item
             self.status_changed.emit(manifest.case_id, "upload", "started", "")
             try:
-                upload_case(manifest, self._config)
+                def _cb(current, total, filename, cid=manifest.case_id):
+                    self.upload_progress.emit(cid, current, total, filename)
+                upload_case(manifest, self._config, progress_cb=_cb)
                 self.status_changed.emit(manifest.case_id, "upload", "completed", "")
             except Exception as exc:
                 self.status_changed.emit(manifest.case_id, "upload", "failed", str(exc))

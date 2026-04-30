@@ -53,6 +53,14 @@ class ExecutionTab(QWidget):
         self._queue_list.addItem(item)
         self._worker.enqueue(manifest)
 
+    def on_upload_progress(
+        self, case_id: str, current: int, total: int, filename: str
+    ) -> None:
+        """更新队列行的 upload 进度。"""
+        item = self._find_item(case_id)
+        if item:
+            item.setText(f"● {case_id}  upload {current}/{total}  {filename}")
+
     def on_status_changed(
         self, case_id: str, step: str, status: str, message: str
     ) -> None:
