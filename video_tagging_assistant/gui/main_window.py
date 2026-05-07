@@ -1,11 +1,5 @@
-"""三 Tab 主窗口：打标 → 审核 → 执行队列。
+"""Three-tab main window coordinating tagging, review, and execution."""
 
-管理 Tab 间状态切换，不直接执行业务逻辑：
-  - 打标完成 → 解锁审核 Tab，调用 review_tab.load_cases()
-  - 审核通过 → 写回工作簿，将 manifest 加入执行队列，解锁执行 Tab
-
-PipelineMainWindow 保留供旧代码向后兼容。
-"""
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -21,7 +15,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.excel_workbook import upsert_create_record_row, load_dut_info, write_case_txt
+from video_tagging_assistant.excel_workbook import load_dut_info, upsert_create_record_row, write_case_txt
 from video_tagging_assistant.gui.execution_tab import ExecutionTab
 from video_tagging_assistant.gui.execution_worker import ExecutionWorker
 from video_tagging_assistant.gui.review_panel import ReviewPanel
@@ -36,14 +30,14 @@ class MainWindow(QMainWindow):
         self._config = config
         self._tag_options = tag_options
         self._workbook_path = Path(config.get("workbook_path", ""))
+        self._auto_execution_enabled = False
+        self._locked_device_info = None
 
         self.setWindowTitle("Video Tagging Pipeline")
 
-        # 执行 Worker（后台线程，贯穿整个 window 生命周期）
         self._worker = ExecutionWorker(config)
         self._worker.start()
 
-        # 三个 Tab
         self._tagging_tab = TaggingTab(config)
         self._review_tab = ReviewTab(config, tag_options)
         self._execution_tab = ExecutionTab(self._worker)
@@ -52,65 +46,103 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._tagging_tab, "打标")
         self._tabs.addTab(self._review_tab, "审核")
         self._tabs.addTab(self._execution_tab, "执行队列")
-
-        # 初始状态：审核和执行 Tab 禁用
         self._tabs.setTabEnabled(1, False)
         self._tabs.setTabEnabled(2, False)
 
         self.setCentralWidget(self._tabs)
 
-        # 信号连接
         self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
         self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
 
+    def _apply_device_info_to_manifest(self, manifest, device_info) -> None:
+        if not isinstance(device_info, dict):
+            return
+
+        module_model = str(device_info.get("模组型号", "")).strip()
+        capture_mode = str(device_info.get("采集模式", "")).strip()
+        if not module_model or not capture_mode:
+            return
+
+        new_mode = f"{module_model}_{capture_mode}"
+        manifest.mode = new_mode
+        manifest.local_case_root = (
+            Path(self._config["local_case_root"]) / new_mode / manifest.created_date / manifest.case_id
+        )
+
+        server_upload_root = self._config.get("server_upload_root", "")
+        if server_upload_root:
+            manifest.server_case_dir = (
+                Path(server_upload_root) / new_mode / manifest.created_date / manifest.case_id
+            )
+
+    def _write_review_outputs(self, manifest, tag_result) -> None:
+        if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
+            try:
+                upsert_create_record_row(self._workbook_path, manifest, tag_result)
+            except Exception as exc:
+                raise RuntimeError(f"写回失败: {exc}") from exc
+
+        try:
+            write_case_txt(manifest, tag_result)
+        except Exception as exc:
+            raise RuntimeError(f"txt 生成失败: {exc}") from exc
+
+        self.statusBar().showMessage(f"已写入 {manifest.case_id}", 3000)
+
     def _on_tagging_complete(self, results: list) -> None:
-        """打标完成：同步当前工作簿路径，解锁审核 Tab，切换过去，并加载 case 列表。"""
-        # Prefer the xlsx writeback path (auto-created copy of xlsm) over the raw input path
         if self._tagging_tab._xlsx_writeback_path:
             self._workbook_path = self._tagging_tab._xlsx_writeback_path
         else:
             self._workbook_path = Path(self._tagging_tab._workbook_edit.text().strip())
-        manifests = [r["manifest"] for r in results]
-        tagging_results = {r["manifest"].case_id: r["ai_result"] for r in results}
+
+        self._auto_execution_enabled = self._tagging_tab.auto_execution_enabled()
+        selected_device_info = self._tagging_tab.selected_device_info()
+        self._locked_device_info = selected_device_info if isinstance(selected_device_info, dict) else None
+
+        manifests = [result["manifest"] for result in results]
+        tagging_results = {result["manifest"].case_id: result["ai_result"] for result in results}
         dut_devices = []
         try:
             dut_devices = load_dut_info(self._workbook_path)
         except Exception:
             pass
+
+        if self._auto_execution_enabled and self._locked_device_info:
+            for manifest in manifests:
+                self._apply_device_info_to_manifest(manifest, self._locked_device_info)
+
         self._tabs.setTabEnabled(1, True)
         self._tabs.setCurrentIndex(1)
-        self._review_tab.load_cases(manifests, tagging_results, dut_devices=dut_devices)
+        self._review_tab.load_cases(
+            manifests,
+            tagging_results,
+            dut_devices=dut_devices,
+            auto_mode=self._auto_execution_enabled,
+            locked_device=self._locked_device_info,
+        )
+
+        if self._auto_execution_enabled:
+            self._tabs.setTabEnabled(2, True)
+            for manifest in manifests:
+                self._execution_tab.add_case(manifest)
 
     def _on_case_approved(self, manifest, tag_result) -> None:
-        """审核通过：写回工作簿（仅 .xlsx），生成 txt 文件，将 case 加入执行队列，解锁执行 Tab。"""
-        # 根据审核选定的设备覆写 manifest.mode 及依赖路径：{模组型号}_{采集模式}
-        module_model = tag_result.device_info.get("模组型号", "").strip()
-        capture_mode = tag_result.device_info.get("采集模式", "").strip()
-        if module_model and capture_mode:
-            new_mode = f"{module_model}_{capture_mode}"
-            old_mode = manifest.mode or self._config.get("mode", "")
-            manifest.mode = new_mode
-            # 重算 local_case_root / server_case_dir：把路径里的 old_mode 段替换成 new_mode
-            if old_mode and old_mode != new_mode:
-                local_root_base = Path(self._config["local_case_root"])
-                server_root_base = Path(self._config.get("server_upload_root", ""))
-                manifest.local_case_root = local_root_base / new_mode / manifest.created_date / manifest.case_id
-                if str(server_root_base) != ".":
-                    manifest.server_case_dir = server_root_base / new_mode / manifest.created_date / manifest.case_id
-        if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
-            try:
-                upsert_create_record_row(self._workbook_path, manifest, tag_result)
-                self.statusBar().showMessage(f"已写入 {manifest.case_id}", 3000)
-            except Exception as exc:
-                self.statusBar().showMessage(f"写回失败: {exc}", 0)
+        if not self._auto_execution_enabled:
+            self._apply_device_info_to_manifest(manifest, tag_result.device_info)
+
         try:
-            write_case_txt(manifest, tag_result)
+            self._write_review_outputs(manifest, tag_result)
         except Exception as exc:
-            self.statusBar().showMessage(f"txt 生成失败: {exc}", 0)
-        self._tabs.setTabEnabled(2, True)
-        self._execution_tab.add_case(manifest)
+            self.statusBar().showMessage(str(exc), 0)
+            return
+
+        self._review_tab.advance_after_approval()
+
+        if not self._auto_execution_enabled:
+            self._tabs.setTabEnabled(2, True)
+            self._execution_tab.add_case(manifest)
 
     def closeEvent(self, event) -> None:
         self._worker.stop()
@@ -119,8 +151,9 @@ class MainWindow(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
-# Legacy window — kept for backward compatibility with app.py and older tests
+# Legacy window - kept for backward compatibility with app.py and older tests
 # ---------------------------------------------------------------------------
+
 
 class PipelineMainWindow(QMainWindow):
     def __init__(
