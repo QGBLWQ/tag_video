@@ -128,6 +128,63 @@ def test_load_cases_from_workbook_also_loads_dut_devices(tmp_path: Path, monkeyp
     assert not tab._device_combo.isEnabled()
 
 
+def test_load_cases_keeps_manifests_when_dut_loading_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import video_tagging_assistant.gui.tagging_tab as tagging_tab_module
+
+    class _DummySignal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class _DummyWorker:
+        def __init__(self, config, manifests, mode):
+            self.config = config
+            self.manifests = manifests
+            self.mode = mode
+            self.started = False
+            self.progress = _DummySignal()
+            self.error = _DummySignal()
+            self.finished = _DummySignal()
+
+        def start(self):
+            self.started = True
+
+    manifests = [
+        SimpleNamespace(case_id="case_A_0001", vs_normal_path=Path("DJI_0001.MP4")),
+    ]
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(tagging_tab_module, "get_next_case_sequence", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(tagging_tab_module, "load_get_list_manifests", lambda **kwargs: manifests)
+
+    def _raise_dut_error(path):
+        raise RuntimeError("Dut_info sheet is invalid")
+
+    monkeypatch.setattr(tagging_tab_module, "load_dut_info", _raise_dut_error, raising=False)
+    monkeypatch.setattr(tagging_tab_module, "_TaggingWorker", _DummyWorker)
+
+    tab = tagging_tab_module.TaggingTab(_CONFIG)
+    tab._workbook_edit.setText(str(workbook_path))
+    tab._load_cases_from_workbook()
+
+    assert tab._manifests == manifests
+    assert tab._case_list.count() == 1
+    assert tab._dut_devices == []
+    assert tab._device_combo.count() == 0
+    assert not tab._device_combo.isEnabled()
+    assert tab._error_list.count() == 1
+    assert "DUT" in tab._error_list.item(0).text()
+
+    tab._start_tagging()
+
+    assert tab._worker is not None
+    assert tab._worker.started is True
+    assert tab._start_btn.isEnabled() is False
+
+
 def test_start_tagging_requires_selected_device_when_auto_mode_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

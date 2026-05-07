@@ -173,11 +173,11 @@ class TaggingTab(QWidget):
         layout.addLayout(mode_row)
 
         auto_row = QHBoxLayout()
-        self._auto_mode_check = QCheckBox("Auto execution")
+        self._auto_mode_check = QCheckBox("自动执行")
         self._device_combo = QComboBox()
         self._device_combo.setEnabled(False)
         auto_row.addWidget(self._auto_mode_check)
-        auto_row.addWidget(QLabel("DUT"))
+        auto_row.addWidget(QLabel("锁定设备"))
         auto_row.addWidget(self._device_combo, stretch=1)
         layout.addLayout(auto_row)
 
@@ -228,7 +228,6 @@ class TaggingTab(QWidget):
                 mode=self._config.get("mode", ""),
                 starting_sequence=starting_seq,
             )
-            self._dut_devices = load_dut_info(wb_path)
         except Exception as exc:
             self._error_list.addItem(f"加载失败: {exc}")
             return
@@ -251,6 +250,14 @@ class TaggingTab(QWidget):
                 f"{manifest.case_id}  {manifest.vs_normal_path.name}"
             )
 
+        try:
+            self._dut_devices = load_dut_info(wb_path)
+        except Exception as exc:
+            self._dut_devices = []
+            self._error_list.addItem(
+                f"加载 DUT 设备信息失败: {exc}。可继续普通打标；如需自动执行，请检查 Dut_info。"
+            )
+
         self._device_combo.clear()
         for device in self._dut_devices:
             label_parts = [
@@ -258,7 +265,7 @@ class TaggingTab(QWidget):
                 device.get("\u6a21\u7ec4\u578b\u53f7", ""),
                 device.get("\u91c7\u96c6\u6a21\u5f0f", ""),
             ]
-            label = " / ".join(part for part in label_parts if part) or "DUT"
+            label = " / ".join(part for part in label_parts if part) or "设备信息"
             self._device_combo.addItem(label, device)
         self._device_combo.setCurrentIndex(-1)
         self._sync_auto_mode_widgets()
@@ -283,7 +290,7 @@ class TaggingTab(QWidget):
 
         device_info = self.selected_device_info()
         if not device_info:
-            self._on_error("Auto execution requires a selected DUT device.")
+            self._on_error('已开启自动执行，请先在“锁定设备”中选择一条 Dut_info 设备信息。')
             return False
 
         required_fields = [
@@ -292,7 +299,10 @@ class TaggingTab(QWidget):
         ]
         missing_fields = [field for field in required_fields if not device_info.get(field)]
         if missing_fields:
-            self._on_error("Selected DUT device is missing required fields.")
+            self._on_error(
+                f'所选设备信息缺少必填字段：{", ".join(missing_fields)}。'
+                "请在 Dut_info 表中补全后重新加载。"
+            )
             return False
 
         return True
