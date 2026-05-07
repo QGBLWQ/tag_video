@@ -182,6 +182,39 @@ def test_review_tab_load_cases_auto_mode_locks_device_and_disables_skip():
     assert not tab._skip_btn.isEnabled()
 
 
+def test_review_tab_normal_mode_preserves_legacy_device_labels_and_keeps_combo_on_empty_list():
+    from video_tagging_assistant.gui.review_tab import ReviewTab
+
+    tab = ReviewTab(_CONFIG, _TAG_OPTIONS)
+    manifests = [_make_manifest("case_A_0001")]
+    tagging_results = {"case_A_0001": _make_ai_result()}
+    dut_devices = [
+        {
+            "\u8bbe\u5907\u7f16\u53f7": "DUT-01",
+            "\u6a21\u7ec4\u578b\u53f7": "OV50",
+            "\u91c7\u96c6\u6a21\u5f0f": "HDR",
+        },
+        {
+            "\u8bbe\u5907\u7f16\u53f7": "DUT-02",
+            "\u6a21\u7ec4\u578b\u53f7": "OTHER",
+            "\u91c7\u96c6\u6a21\u5f0f": "NORMAL",
+        },
+    ]
+
+    tab.load_cases(manifests, tagging_results, dut_devices=dut_devices)
+
+    assert tab._device_combo.count() == 2
+    assert tab._device_combo.itemText(0) == "DUT-01"
+    assert tab._device_combo.itemText(1) == "DUT-02"
+
+    tab._device_combo.setCurrentIndex(1)
+    tab.load_cases(manifests, tagging_results, dut_devices=[])
+
+    assert tab._device_combo.count() == 2
+    assert tab._device_combo.currentText() == "DUT-02"
+    assert tab._device_combo.itemData(1) == dut_devices[1]
+
+
 def test_review_tab_pass_emits_approval_without_advancing_until_parent_confirms():
     from video_tagging_assistant.gui.review_tab import ReviewTab
 

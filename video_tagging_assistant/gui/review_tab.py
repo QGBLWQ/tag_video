@@ -161,7 +161,7 @@ class ReviewTab(QWidget):
         previous_label = self._device_combo.currentText()
         self._device_combo.clear()
         for device in dut_devices:
-            self._device_combo.addItem(_device_label(device), device)
+            self._device_combo.addItem(device.get("\u8bbe\u5907\u7f16\u53f7", ""), device)
         index = self._device_combo.findText(previous_label)
         if index >= 0:
             self._device_combo.setCurrentIndex(index)
@@ -186,7 +186,7 @@ class ReviewTab(QWidget):
             self._device_combo.setEnabled(False)
             self._skip_btn.setEnabled(False)
         else:
-            if dut_devices is not None:
+            if dut_devices:
                 self._populate_device_combo(dut_devices)
             self._device_combo.setEnabled(True)
             self._skip_btn.setEnabled(True)
