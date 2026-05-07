@@ -34,6 +34,24 @@ def validate_pull_counts(remote_count: int, final_dir: Path) -> bool:
     return remote_count >= 0 and count_local_files(final_dir) == remote_count
 
 
+def consume_temp_pull_source(temp_root: Path, rk_suffix: str, final_dir: Path) -> bool:
+    candidate = temp_root / rk_suffix
+    if not candidate.exists():
+        return False
+
+    source_count = count_local_files(candidate)
+    if source_count == 0:
+        return False
+
+    if validate_pull_counts(source_count, final_dir):
+        return True
+
+    merge_tmp_into_final(candidate, final_dir)
+    if not validate_pull_counts(source_count, final_dir):
+        raise RuntimeError(f"temp_path validation failed for rk_suffix={rk_suffix}")
+    return True
+
+
 def count_remote_files(device_path: str) -> int:
     result = subprocess.run(
         ["adb", "shell", "find", device_path, "-type", "f"],

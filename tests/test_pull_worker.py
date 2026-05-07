@@ -1,5 +1,49 @@
 from video_tagging_assistant.case_ingest_models import PullTask
-from video_tagging_assistant.pull_worker import merge_tmp_into_final, run_resumable_pull, validate_pull_counts
+from video_tagging_assistant.pull_worker import (
+    consume_temp_pull_source,
+    merge_tmp_into_final,
+    run_resumable_pull,
+    validate_pull_counts,
+)
+
+
+def test_consume_temp_pull_source_moves_matching_rk_dir_into_final(tmp_path):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    (source_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "a.txt").write_text("ok", encoding="utf-8")
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+
+    consumed = consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert consumed is True
+    assert (final_dir / "nested" / "a.txt").read_text(encoding="utf-8") == "ok"
+    assert not source_dir.exists()
+
+
+def test_consume_temp_pull_source_keeps_source_when_final_is_already_complete(tmp_path):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+    source_dir.mkdir(parents=True)
+    final_dir.mkdir(parents=True)
+    (source_dir / "a.txt").write_text("temp", encoding="utf-8")
+    (final_dir / "a.txt").write_text("final", encoding="utf-8")
+
+    consumed = consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert consumed is True
+    assert source_dir.exists()
+    assert (final_dir / "a.txt").read_text(encoding="utf-8") == "final"
+
+
+def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_path):
+    temp_root = tmp_path / "temp_pull_cache"
+    (temp_root / "117").mkdir(parents=True)
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+
+    assert consume_temp_pull_source(temp_root, "118", final_dir) is False
+    assert consume_temp_pull_source(temp_root, "117", final_dir) is False
 
 
 def test_merge_tmp_into_final_moves_missing_files_only(tmp_path):
