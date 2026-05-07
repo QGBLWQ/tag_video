@@ -1,13 +1,5 @@
-"""Tab2 审核：逐 case 展示 AI 打标结果，人工选择字段后写回工作簿。
+"""Review UI for manually confirming AI tagging results one case at a time."""
 
-字段分两类：
-  单选字段（安装方式/运动模式/运镜方式/光源）：显示 tag_options 中全部候选项，不预选。
-  多选字段（画面特征/影像表达）：只显示 AI 建议的候选项，人工从中选一个。
-
-操作：
-  通过：校验所有字段已选 → 构造 TagResult → emit case_approved → 显示下一 case
-  跳过：不写回，不加入队列，直接跳到下一 case
-"""
 import subprocess
 from pathlib import Path
 
@@ -16,7 +8,6 @@ from PyQt5.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -31,22 +22,35 @@ from PyQt5.QtWidgets import (
 
 from video_tagging_assistant.excel_workbook import TagResult
 
-# 字段名 → TagResult 属性名映射
 _FIELD_ATTR = {
-    "安装方式": "install_method",
-    "运动模式": "motion_mode",
-    "运镜方式": "camera_move",
-    "光源": "light_source",
-    "画面特征": "image_feature",
-    "影像表达": "image_expression",
+    "\u5b89\u88c5\u65b9\u5f0f": "install_method",
+    "\u8fd0\u52a8\u6a21\u5f0f": "motion_mode",
+    "\u8fd0\u955c\u65b9\u5f0f": "camera_move",
+    "\u5149\u6e90": "light_source",
+    "\u753b\u9762\u7279\u5f81": "image_feature",
+    "\u5f71\u50cf\u8868\u8fbe": "image_expression",
 }
 
-_SINGLE_FIELDS = ["安装方式", "运动模式", "运镜方式", "光源"]
-_MULTI_FIELDS = ["画面特征", "影像表达"]
+_SINGLE_FIELDS = [
+    "\u5b89\u88c5\u65b9\u5f0f",
+    "\u8fd0\u52a8\u6a21\u5f0f",
+    "\u8fd0\u955c\u65b9\u5f0f",
+    "\u5149\u6e90",
+]
+_MULTI_FIELDS = ["\u753b\u9762\u7279\u5f81", "\u5f71\u50cf\u8868\u8fbe"]
+
+
+def _device_label(device: dict) -> str:
+    label_parts = [
+        device.get("\u8bbe\u5907\u7f16\u53f7", ""),
+        device.get("\u6a21\u7ec4\u578b\u53f7", ""),
+        device.get("\u91c7\u96c6\u6a21\u5f0f", ""),
+    ]
+    return " / ".join(part for part in label_parts if part) or "\u8bbe\u5907\u4fe1\u606f"
 
 
 class ReviewTab(QWidget):
-    """Tab2：逐 case 审核面板。"""
+    """Tab 2: manual review for each tagged case."""
 
     case_approved = pyqtSignal(object, object)  # (CaseManifest, TagResult)
 
@@ -56,42 +60,39 @@ class ReviewTab(QWidget):
         self._tag_options = tag_options
         self._manifests: list = []
         self._tagging_results: dict = {}
-        self._current_index: int = 0
+        self._current_index = 0
         self._groups: dict = {}
-        self._device_combo: QComboBox = QComboBox()
+        self._auto_mode = False
+        self._locked_device = None
+        self._device_combo = QComboBox()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         outer = QVBoxLayout(self)
 
-        # 进度 + case 信息行
         info_row = QHBoxLayout()
         self._progress_label = QLabel("0/0")
-        self._case_label = QLabel("—")
-        self._preview_btn = QPushButton("▶ PotPlayer 预览")
+        self._case_label = QLabel("-")
+        self._preview_btn = QPushButton("\u25b6 PotPlayer \u9884\u89c8")
         info_row.addWidget(self._progress_label)
         info_row.addWidget(self._case_label, stretch=1)
         info_row.addWidget(self._preview_btn)
         outer.addLayout(info_row)
 
-        # 设备编号选择（选一次后自动沿用）
         device_row = QHBoxLayout()
-        device_row.addWidget(QLabel("设备编号："))
+        device_row.addWidget(QLabel("\u8bbe\u5907\u7f16\u53f7:"))
         device_row.addWidget(self._device_combo, stretch=1)
         outer.addLayout(device_row)
 
-        # AI 标签摘要（不含画面描述）
-        self._ai_summary_label = QLabel("AI 标签：（未加载）")
+        self._ai_summary_label = QLabel("AI \u6807\u7b7e\uff1a\uff08\u672a\u52a0\u8f7d\uff09")
         self._ai_summary_label.setWordWrap(True)
         outer.addWidget(self._ai_summary_label)
 
-        # 画面描述（可编辑）
-        outer.addWidget(QLabel("画面描述（可修改）："))
+        outer.addWidget(QLabel("\u753b\u9762\u63cf\u8ff0\uff08\u53ef\u4fee\u6539\uff09\uff1a"))
         self._scene_desc_edit = QTextEdit()
         self._scene_desc_edit.setMaximumHeight(80)
         outer.addWidget(self._scene_desc_edit)
 
-        # 字段选择区域（可滚动）
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         fields_widget = QWidget()
@@ -99,17 +100,15 @@ class ReviewTab(QWidget):
         scroll.setWidget(fields_widget)
         outer.addWidget(scroll, stretch=1)
 
-        # 备注
         note_row = QHBoxLayout()
-        note_row.addWidget(QLabel("备注:"))
+        note_row.addWidget(QLabel("\u5907\u6ce8:"))
         self._note_edit = QLineEdit()
         note_row.addWidget(self._note_edit, stretch=1)
         outer.addLayout(note_row)
 
-        # 通过 / 跳过
         btn_row = QHBoxLayout()
-        self._pass_btn = QPushButton("✓ 通过")
-        self._skip_btn = QPushButton("→ 跳过")
+        self._pass_btn = QPushButton("\u2714 \u901a\u8fc7")
+        self._skip_btn = QPushButton("\u2192 \u8df3\u8fc7")
         btn_row.addWidget(self._pass_btn)
         btn_row.addWidget(self._skip_btn)
         btn_row.addStretch()
@@ -120,13 +119,10 @@ class ReviewTab(QWidget):
         self._skip_btn.clicked.connect(self._handle_skip)
 
     def _rebuild_field_buttons(self, ai_result: dict) -> None:
-        """根据当前 case 的 AI 结果重建字段选择区域。"""
-        # 清空旧内容
         while self._fields_layout.rowCount() > 0:
             self._fields_layout.removeRow(0)
         self._groups.clear()
 
-        # 单选字段：显示全部候选项，AI 建议值预选
         for field in _SINGLE_FIELDS:
             options = self._tag_options.get(field, [])
             ai_value = ai_result.get(field, "")
@@ -134,17 +130,16 @@ class ReviewTab(QWidget):
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            for opt in options:
-                rb = QRadioButton(opt)
-                if opt == ai_value:
-                    rb.setChecked(True)
-                group.addButton(rb)
-                row_layout.addWidget(rb)
+            for option in options:
+                button = QRadioButton(option)
+                if option == ai_value:
+                    button.setChecked(True)
+                group.addButton(button)
+                row_layout.addWidget(button)
             row_layout.addStretch()
             self._groups[field] = group
-            self._fields_layout.addRow(f"{field}：", row_widget)
+            self._fields_layout.addRow(f"{field}:", row_widget)
 
-        # 多选字段：只显示 AI 建议的候选项
         for field in _MULTI_FIELDS:
             ai_suggestions = ai_result.get(field, [])
             if isinstance(ai_suggestions, str):
@@ -154,35 +149,54 @@ class ReviewTab(QWidget):
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            for opt in options:
-                rb = QRadioButton(opt)
-                group.addButton(rb)
-                row_layout.addWidget(rb)
+            for option in options:
+                button = QRadioButton(option)
+                group.addButton(button)
+                row_layout.addWidget(button)
             row_layout.addStretch()
             self._groups[field] = group
-            label = f"{field}（AI 建议，选一）："
-            self._fields_layout.addRow(label, row_widget)
+            self._fields_layout.addRow(f"{field}\uff08AI \u5efa\u8bae\uff0c\u9009\u4e00\uff09:", row_widget)
 
-    def load_cases(self, cases: list, tagging_results: dict, dut_devices: list = None) -> None:
-        """由 MainWindow 在打标完成后调用，初始化审核队列。"""
+    def _populate_device_combo(self, dut_devices) -> None:
+        previous_label = self._device_combo.currentText()
+        self._device_combo.clear()
+        for device in dut_devices:
+            self._device_combo.addItem(_device_label(device), device)
+        index = self._device_combo.findText(previous_label)
+        if index >= 0:
+            self._device_combo.setCurrentIndex(index)
+
+    def load_cases(
+        self,
+        cases: list,
+        tagging_results: dict,
+        dut_devices=None,
+        auto_mode: bool = False,
+        locked_device=None,
+    ) -> None:
         self._manifests = cases
         self._tagging_results = tagging_results
         self._current_index = 0
-        if dut_devices:
-            prev_device = self._device_combo.currentText()
+        self._auto_mode = auto_mode
+        self._locked_device = locked_device if isinstance(locked_device, dict) else None
+
+        if self._auto_mode and self._locked_device:
             self._device_combo.clear()
-            for device in dut_devices:
-                self._device_combo.addItem(device.get("设备编号", ""), device)
-            # 恢复上次选择
-            idx = self._device_combo.findText(prev_device)
-            if idx >= 0:
-                self._device_combo.setCurrentIndex(idx)
+            self._device_combo.addItem(_device_label(self._locked_device), self._locked_device)
+            self._device_combo.setEnabled(False)
+            self._skip_btn.setEnabled(False)
+        else:
+            if dut_devices is not None:
+                self._populate_device_combo(dut_devices)
+            self._device_combo.setEnabled(True)
+            self._skip_btn.setEnabled(True)
+
         self._show_case(0)
 
     def _show_case(self, index: int) -> None:
         if not self._manifests or index >= len(self._manifests):
             self._progress_label.setText(f"{index}/{len(self._manifests)}")
-            self._case_label.setText("全部审核完毕")
+            self._case_label.setText("\u5168\u90e8\u5ba1\u6838\u5b8c\u6bd5")
             return
 
         manifest = self._manifests[index]
@@ -192,17 +206,16 @@ class ReviewTab(QWidget):
         self._case_label.setText(f"{manifest.case_id}   {manifest.vs_normal_path.name}")
         self._note_edit.clear()
 
-        # 构建 AI 标签摘要（排除画面描述）
         lines = []
-        for k, v in ai_result.items():
-            if k == "画面描述":
+        for key, value in ai_result.items():
+            if key == "\u753b\u9762\u63cf\u8ff0":
                 continue
-            if isinstance(v, list):
-                lines.append(f"{k}: {', '.join(v)}")
+            if isinstance(value, list):
+                lines.append(f"{key}: {', '.join(value)}")
             else:
-                lines.append(f"{k}: {v}")
-        self._ai_summary_label.setText("AI 标签：" + " | ".join(lines))
-        self._scene_desc_edit.setPlainText(ai_result.get("画面描述", ""))
+                lines.append(f"{key}: {value}")
+        self._ai_summary_label.setText("AI \u6807\u7b7e\uff1a" + " | ".join(lines))
+        self._scene_desc_edit.setPlainText(ai_result.get("\u753b\u9762\u63cf\u8ff0", ""))
 
         self._rebuild_field_buttons(ai_result)
 
@@ -210,8 +223,10 @@ class ReviewTab(QWidget):
         self._current_index += 1
         self._show_case(self._current_index)
 
+    def advance_after_approval(self) -> None:
+        self._advance()
+
     def _collect_selections(self):
-        """收集当前所有字段的选中值，任一字段未选则返回 None。"""
         selections = {}
         for field in list(_SINGLE_FIELDS) + list(_MULTI_FIELDS):
             group = self._groups.get(field)
@@ -226,24 +241,27 @@ class ReviewTab(QWidget):
     def _handle_pass(self) -> None:
         selections = self._collect_selections()
         if selections is None:
-            QMessageBox.warning(self, "字段未完整", "请选择所有字段后再点击通过。")
+            QMessageBox.warning(
+                self,
+                "\u5b57\u6bb5\u672a\u5b8c\u6574",
+                "\u8bf7\u9009\u62e9\u6240\u6709\u5b57\u6bb5\u540e\u518d\u70b9\u51fb\u901a\u8fc7\u3002",
+            )
             return
 
         manifest = self._manifests[self._current_index]
         device_info = self._device_combo.currentData() or {}
         tag_result = TagResult(
-            install_method=selections.get("安装方式", ""),
-            motion_mode=selections.get("运动模式", ""),
-            camera_move=selections.get("运镜方式", ""),
-            light_source=selections.get("光源", ""),
-            image_feature=selections.get("画面特征", ""),
-            image_expression=selections.get("影像表达", ""),
+            install_method=selections.get("\u5b89\u88c5\u65b9\u5f0f", ""),
+            motion_mode=selections.get("\u8fd0\u52a8\u6a21\u5f0f", ""),
+            camera_move=selections.get("\u8fd0\u955c\u65b9\u5f0f", ""),
+            light_source=selections.get("\u5149\u6e90", ""),
+            image_feature=selections.get("\u753b\u9762\u7279\u5f81", ""),
+            image_expression=selections.get("\u5f71\u50cf\u8868\u8fbe", ""),
             scene_description=self._scene_desc_edit.toPlainText().strip(),
             device_info=device_info,
-            review_status="审核通过",
+            review_status="\u5ba1\u6838\u901a\u8fc7",
         )
         self.case_approved.emit(manifest, tag_result)
-        self._advance()
 
     def _handle_skip(self) -> None:
         self._advance()
@@ -251,6 +269,7 @@ class ReviewTab(QWidget):
     def _open_potplayer(self) -> None:
         if not self._manifests or self._current_index >= len(self._manifests):
             return
+
         manifest = self._manifests[self._current_index]
         potplayer = self._config.get("potplayer_exe", "")
         dji_dir = Path(self._config.get("dji_nomal_dir", ""))
@@ -258,8 +277,10 @@ class ReviewTab(QWidget):
 
         if not potplayer or not Path(potplayer).exists():
             QMessageBox.warning(
-                self, "播放器未配置",
-                "请在 configs/config.json 中配置 potplayer_exe 路径。"
+                self,
+                "\u64ad\u653e\u5668\u672a\u914d\u7f6e",
+                "\u8bf7\u5728 configs/config.json \u4e2d\u914d\u7f6e potplayer_exe \u8def\u5f84\u3002",
             )
             return
+
         subprocess.Popen([potplayer, str(video_path)])
