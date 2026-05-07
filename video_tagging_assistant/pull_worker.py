@@ -52,6 +52,7 @@ def consume_temp_pull_source(temp_root: Path, rk_suffix: str, final_dir: Path) -
     if not final_dir.exists():
         candidate.rename(final_dir)
         if relative_file_set(final_dir) != source_files:
+            final_dir.rename(candidate)
             raise RuntimeError(f"temp_path validation failed for rk_suffix={rk_suffix}")
         return True
 

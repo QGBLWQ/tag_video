@@ -57,6 +57,30 @@ def test_consume_temp_pull_source_merges_missing_files_into_existing_final_and_d
     assert not source_dir.exists()
 
 
+def test_consume_temp_pull_source_restores_source_when_rename_path_validation_fails(tmp_path, monkeypatch):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+    (source_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "a.txt").write_text("source", encoding="utf-8")
+
+    original_relative_file_set = __import__("video_tagging_assistant.pull_worker", fromlist=["relative_file_set"]).relative_file_set
+    source_files = original_relative_file_set(source_dir)
+
+    def fake_relative_file_set(path):
+        if path == final_dir:
+            return {next(iter(source_files)) / "unexpected"}
+        return original_relative_file_set(path)
+
+    monkeypatch.setattr("video_tagging_assistant.pull_worker.relative_file_set", fake_relative_file_set)
+
+    with pytest.raises(RuntimeError, match="temp_path validation failed for rk_suffix=117"):
+        consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert source_dir.exists()
+    assert (source_dir / "nested" / "a.txt").read_text(encoding="utf-8") == "source"
+
+
 def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_path):
     temp_root = tmp_path / "temp_pull_cache"
     (temp_root / "117").mkdir(parents=True)
