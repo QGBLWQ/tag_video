@@ -21,7 +21,7 @@
 | `dut_root` | string | `"/mnt/nvme/CapturedData"` | 设备（DUT）上存放 RK 原始数据的根目录（Android/Linux 路径）。`pull` 命令格式：`adb pull {dut_root}/{rk_suffix} ...`。 |
 | `temp_path` | string，可选 | `"E:/DV/temp_pull_cache"` | 本地临时 pull 源根目录，目录结构需镜像 `/mnt/nvme/CapturedData`，按 RK 后缀分子目录，例如 `temp_path/117`、`temp_path/118`。GUI 执行 `pull` 时会优先检查 `temp_path/<rk_suffix>/`；若目录存在且非空，则直接消费式迁移到 `{local_case_root}/{case_id}_RK_raw_{rk_suffix}`，不会调用 ADB。若未配置、根目录不存在、对应子目录不存在或为空，则回退到正常 `adb pull`。 |
 | `local_case_root` | string | `"E:/DV/采集建档V2.1"` | 本地 case 存放根目录。`pull` 操作将文件下载到 `{local_case_root}/{case_id}_RK_raw_{rk_suffix}`，`move` 操作将其整理为 `{local_case_root}/{mode}/{created_date}/{case_id}/` 结构。 |
-| `server_upload_root` | string | `"\\\\10.10.10.164\\rk3668_capture"` | 服务器上传目标根路径（UNC 路径或本地映射盘）。`upload` 操作将本地 case 目录复制到 `{server_upload_root}/{mode}/{created_date}/{case_id}/`。目标已存在时会抛出错误，不覆盖。 |
+| `server_upload_root` | string | `"\\\\10.10.10.164\\rk3668_capture"` | 服务器上传目标根路径（UNC 路径或本地映射盘）。`upload` 操作将本地 case 目录复制到 `{server_upload_root}/{mode}/{created_date}/{case_id}/`。若目标目录已存在且其中已有文件，则跳过上传，不覆盖。 |
 | `mode` | string | `"OV50H40_Action5Pro_DCG HDR"` | 模组模式名称，同时决定本地和服务器的子目录名。每次采集前确认与当前硬件组合一致。 |
 | `pc_id` | string | `"A"` | 本机编号（A/B/C/…），用于生成 case_id 前缀（如 `case_A_0078`）。多台 PC 并行采集时需保证唯一。 |
 
