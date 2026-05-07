@@ -27,16 +27,16 @@ def test_consume_temp_pull_source_keeps_source_when_final_is_already_complete(tm
     temp_root = tmp_path / "temp_pull_cache"
     source_dir = temp_root / "117"
     final_dir = tmp_path / "case_A_0078_RK_raw_117"
-    source_dir.mkdir(parents=True)
-    final_dir.mkdir(parents=True)
-    (source_dir / "a.txt").write_text("temp", encoding="utf-8")
-    (final_dir / "a.txt").write_text("final", encoding="utf-8")
+    (source_dir / "nested").mkdir(parents=True)
+    (final_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "a.txt").write_text("temp", encoding="utf-8")
+    (final_dir / "nested" / "a.txt").write_text("final", encoding="utf-8")
 
     consumed = consume_temp_pull_source(temp_root, "117", final_dir)
 
     assert consumed is True
     assert source_dir.exists()
-    assert (final_dir / "a.txt").read_text(encoding="utf-8") == "final"
+    assert (final_dir / "nested" / "a.txt").read_text(encoding="utf-8") == "final"
 
 
 def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_path):
@@ -48,22 +48,22 @@ def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_pat
     assert consume_temp_pull_source(temp_root, "117", final_dir) is False
 
 
-def test_consume_temp_pull_source_raises_when_post_merge_count_mismatches(tmp_path, monkeypatch):
+def test_consume_temp_pull_source_raises_when_post_merge_tree_mismatches_and_preserves_source(tmp_path):
     temp_root = tmp_path / "temp_pull_cache"
     source_dir = temp_root / "117"
-    source_dir.mkdir(parents=True)
-    (source_dir / "a.txt").write_text("a", encoding="utf-8")
-    (source_dir / "b.txt").write_text("b", encoding="utf-8")
     final_dir = tmp_path / "case_A_0078_RK_raw_117"
-
-    def fake_merge(tmp_dir, target_dir):
-        target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / "a.txt").write_text("partial", encoding="utf-8")
-
-    monkeypatch.setattr("video_tagging_assistant.pull_worker.merge_tmp_into_final", fake_merge)
+    source_dir.mkdir(parents=True)
+    final_dir.mkdir(parents=True)
+    (source_dir / "a.txt").write_text("source", encoding="utf-8")
+    (final_dir / "extra.txt").write_text("extra", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="temp_path validation failed for rk_suffix=117"):
         consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert source_dir.exists()
+    assert (source_dir / "a.txt").read_text(encoding="utf-8") == "source"
+    assert (final_dir / "a.txt").read_text(encoding="utf-8") == "source"
+    assert (final_dir / "extra.txt").read_text(encoding="utf-8") == "extra"
 
 
 def test_merge_tmp_into_final_moves_missing_files_only(tmp_path):

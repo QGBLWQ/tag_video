@@ -11,6 +11,12 @@ def count_local_files(path: Path) -> int:
     return sum(1 for file_path in path.rglob("*") if file_path.is_file())
 
 
+def relative_file_set(path: Path) -> set:
+    if not path.exists():
+        return set()
+    return {file_path.relative_to(path) for file_path in path.rglob("*") if file_path.is_file()}
+
+
 def merge_tmp_into_final(tmp_dir: Path, final_dir: Path) -> None:
     if not tmp_dir.exists():
         return
@@ -39,16 +45,30 @@ def consume_temp_pull_source(temp_root: Path, rk_suffix: str, final_dir: Path) -
     if not candidate.exists():
         return False
 
-    source_count = count_local_files(candidate)
-    if source_count == 0:
+    source_files = relative_file_set(candidate)
+    if not source_files:
         return False
 
-    if validate_pull_counts(source_count, final_dir):
+    if not final_dir.exists():
+        candidate.rename(final_dir)
+        if relative_file_set(final_dir) != source_files:
+            raise RuntimeError(f"temp_path validation failed for rk_suffix={rk_suffix}")
         return True
 
-    merge_tmp_into_final(candidate, final_dir)
-    if not validate_pull_counts(source_count, final_dir):
+    if relative_file_set(final_dir) == source_files:
+        return True
+
+    missing_files = source_files - relative_file_set(final_dir)
+    for relative_path in missing_files:
+        source = candidate / relative_path
+        target = final_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+    if relative_file_set(final_dir) != source_files:
         raise RuntimeError(f"temp_path validation failed for rk_suffix={rk_suffix}")
+
+    shutil.rmtree(candidate, ignore_errors=True)
     return True
 
 
