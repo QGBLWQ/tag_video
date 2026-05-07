@@ -85,11 +85,20 @@ class MainWindow(QMainWindow):
 
     def _on_case_approved(self, manifest, tag_result) -> None:
         """审核通过：写回工作簿（仅 .xlsx），生成 txt 文件，将 case 加入执行队列，解锁执行 Tab。"""
-        # 根据审核选定的设备覆写 manifest.mode：{模组型号}_{采集模式}
+        # 根据审核选定的设备覆写 manifest.mode 及依赖路径：{模组型号}_{采集模式}
         module_model = tag_result.device_info.get("模组型号", "").strip()
         capture_mode = tag_result.device_info.get("采集模式", "").strip()
         if module_model and capture_mode:
-            manifest.mode = f"{module_model}_{capture_mode}"
+            new_mode = f"{module_model}_{capture_mode}"
+            old_mode = manifest.mode or self._config.get("mode", "")
+            manifest.mode = new_mode
+            # 重算 local_case_root / server_case_dir：把路径里的 old_mode 段替换成 new_mode
+            if old_mode and old_mode != new_mode:
+                local_root_base = Path(self._config["local_case_root"])
+                server_root_base = Path(self._config.get("server_upload_root", ""))
+                manifest.local_case_root = local_root_base / new_mode / manifest.created_date / manifest.case_id
+                if str(server_root_base) != ".":
+                    manifest.server_case_dir = server_root_base / new_mode / manifest.created_date / manifest.case_id
         if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
