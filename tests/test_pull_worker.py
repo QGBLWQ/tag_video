@@ -39,6 +39,24 @@ def test_consume_temp_pull_source_keeps_source_when_final_is_already_complete(tm
     assert (final_dir / "nested" / "a.txt").read_text(encoding="utf-8") == "final"
 
 
+def test_consume_temp_pull_source_merges_missing_files_into_existing_final_and_deletes_source(tmp_path):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+    (source_dir / "nested").mkdir(parents=True)
+    (final_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "keep.txt").write_text("source-keep", encoding="utf-8")
+    (source_dir / "nested" / "missing.txt").write_text("source-missing", encoding="utf-8")
+    (final_dir / "nested" / "keep.txt").write_text("final-keep", encoding="utf-8")
+
+    consumed = consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert consumed is True
+    assert (final_dir / "nested" / "keep.txt").read_text(encoding="utf-8") == "final-keep"
+    assert (final_dir / "nested" / "missing.txt").read_text(encoding="utf-8") == "source-missing"
+    assert not source_dir.exists()
+
+
 def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_path):
     temp_root = tmp_path / "temp_pull_cache"
     (temp_root / "117").mkdir(parents=True)
