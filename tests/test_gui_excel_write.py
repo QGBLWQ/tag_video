@@ -147,6 +147,65 @@ def test_upsert_create_record_row_appends_new_row_for_current_xlsx_data(tmp_path
     assert ws.cell(2, headers["VS_Night"]).value.endswith("case_A_0001_night_DJI_20260422151916_0021_D.MP4")
 
 
+def test_upsert_create_record_row_same_case_id_twice_does_not_append_duplicate_row(tmp_path: Path):
+    wb_path = tmp_path / "create_record.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Sheet"
+    wb.save(wb_path)
+
+    manifest = _make_manifest(tmp_path)
+    first_result = _make_tag_result()
+    second_result = TagResult(
+        install_method="\u7a7f\u6234",
+        motion_mode="\u8dd1\u52a8",
+        camera_move="\u4f4e\u89d2\u5ea6\u8ddf\u62cd",
+        light_source="\u9006\u5149",
+        image_feature="\u5927\u9762\u79ef\u9ad8\u4eae",
+        image_expression="\u57ce\u5e02\u8857\u666f",
+        review_status="\u5ba1\u6838\u901a\u8fc7",
+        scene_description="\u7b2c\u4e8c\u6b21\u5199\u56de",
+    )
+
+    upsert_create_record_row(wb_path, manifest, first_result)
+    upsert_create_record_row(wb_path, manifest, second_result)
+
+    wb = openpyxl.load_workbook(wb_path)
+    ws = wb[CREATE_RECORD_SHEET]
+    headers = {cell.value: cell.column for cell in ws[1]}
+
+    assert ws.max_row == 2
+    assert ws.cell(2, headers["\u6587\u4ef6\u5939\u540d"]).value == manifest.case_id
+    assert ws.cell(2, headers["\u5907\u6ce8"]).value == second_result.scene_description
+    assert ws.cell(2, headers["\u5b89\u88c5\u65b9\u5f0f"]).value == second_result.install_method
+    assert ws.cell(2, headers["\u8fd0\u52a8\u6a21\u5f0f"]).value == second_result.motion_mode
+    assert ws.cell(2, headers["\u8fd0\u955c\u5143\u7d20"]).value == second_result.camera_move
+    assert ws.cell(2, headers["\u5149\u6e90\u5212\u5206"]).value == second_result.light_source
+
+
+def test_upsert_create_record_row_sparse_existing_sheet_updates_available_columns(tmp_path: Path):
+    wb_path = tmp_path / "sparse_create_record.xlsx"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = CREATE_RECORD_SHEET
+    ws.append(["\u5e8f\u53f7", "\u6587\u4ef6\u5939\u540d", "\u5907\u6ce8", "\u5b89\u88c5\u65b9\u5f0f"])
+    ws.append([1, "case_A_0001", "old note", "old install"])
+    wb.save(wb_path)
+
+    manifest = _make_manifest(tmp_path)
+    tag_result = _make_tag_result()
+
+    upsert_create_record_row(wb_path, manifest, tag_result)
+
+    wb = openpyxl.load_workbook(wb_path)
+    ws = wb[CREATE_RECORD_SHEET]
+    headers = {cell.value: cell.column for cell in ws[1]}
+
+    assert ws.max_row == 2
+    assert ws.cell(2, headers["\u6587\u4ef6\u5939\u540d"]).value == manifest.case_id
+    assert ws.cell(2, headers["\u5907\u6ce8"]).value == tag_result.scene_description
+    assert ws.cell(2, headers["\u5b89\u88c5\u65b9\u5f0f"]).value == tag_result.install_method
+
+
 def test_upsert_create_record_row_rejects_xlsm(tmp_path: Path):
     xlsm_path = tmp_path / "create_record.xlsm"
     xlsm_path.write_bytes(b"fake xlsm")
