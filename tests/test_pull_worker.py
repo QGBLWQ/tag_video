@@ -1,3 +1,5 @@
+import pytest
+
 from video_tagging_assistant.case_ingest_models import PullTask
 from video_tagging_assistant.pull_worker import (
     consume_temp_pull_source,
@@ -44,6 +46,24 @@ def test_consume_temp_pull_source_returns_false_for_missing_or_empty_dir(tmp_pat
 
     assert consume_temp_pull_source(temp_root, "118", final_dir) is False
     assert consume_temp_pull_source(temp_root, "117", final_dir) is False
+
+
+def test_consume_temp_pull_source_raises_when_post_merge_count_mismatches(tmp_path, monkeypatch):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    source_dir.mkdir(parents=True)
+    (source_dir / "a.txt").write_text("a", encoding="utf-8")
+    (source_dir / "b.txt").write_text("b", encoding="utf-8")
+    final_dir = tmp_path / "case_A_0078_RK_raw_117"
+
+    def fake_merge(tmp_dir, target_dir):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "a.txt").write_text("partial", encoding="utf-8")
+
+    monkeypatch.setattr("video_tagging_assistant.pull_worker.merge_tmp_into_final", fake_merge)
+
+    with pytest.raises(RuntimeError, match="temp_path validation failed for rk_suffix=117"):
+        consume_temp_pull_source(temp_root, "117", final_dir)
 
 
 def test_merge_tmp_into_final_moves_missing_files_only(tmp_path):
