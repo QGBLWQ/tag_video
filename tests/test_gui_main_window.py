@@ -73,6 +73,25 @@ def _make_tag_result(device_info=None):
     )
 
 
+def _make_ai_result():
+    return {
+        "安装方式": "手持",
+        "运动模式": "行走",
+        "运镜方式": "推拉",
+        "光源": "正常",
+        "画面特征": ["边缘特征 强弱"],
+        "影像表达": ["风景录像"],
+        "画面描述": "case reviewed",
+    }
+
+
+def _select_first_option_per_group(review_tab) -> None:
+    for group in review_tab._groups.values():
+        buttons = group.buttons()
+        if buttons:
+            buttons[0].setChecked(True)
+
+
 def test_main_window_title():
     window = _make_window()
     assert window.windowTitle() == "Video Tagging Pipeline"
@@ -222,6 +241,34 @@ def test_writeback_failure_keeps_current_case_in_place_and_does_not_advance(tmp_
     assert "txt" in window.statusBar().currentMessage()
 
 
+def test_writeback_failure_keeps_current_case_visible_and_restores_retryable_review_state(tmp_path):
+    window = _make_window()
+    manifest = _make_manifest("case_A_0001")
+    workbook_path = tmp_path / "cases.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    window._tagging_tab._xlsx_writeback_path = workbook_path
+    window._tagging_tab.auto_execution_enabled = MagicMock(return_value=False)
+    window._tagging_tab.selected_device_info = MagicMock(return_value={})
+    window._execution_tab.add_case = MagicMock()
+
+    window._on_tagging_complete([{"manifest": manifest, "ai_result": _make_ai_result(), "missing": False}])
+    _select_first_option_per_group(window._review_tab)
+
+    with patch("video_tagging_assistant.gui.main_window.upsert_create_record_row"), patch(
+        "video_tagging_assistant.gui.main_window.write_case_txt",
+        side_effect=RuntimeError("txt failed"),
+    ):
+        window._review_tab._pass_btn.click()
+
+    assert window._review_tab._current_index == 0
+    assert "case_A_0001" in window._review_tab._case_label.text()
+    assert window._review_tab._pass_btn.isEnabled()
+    assert window._review_tab._skip_btn.isEnabled()
+    assert not window._execution_tab.add_case.called
+    assert "txt" in window.statusBar().currentMessage()
+
+
 def test_manual_mode_approval_applies_device_info_and_enqueues_after_successful_writeback(tmp_path):
     window = _make_window()
     manifest = _make_manifest("case_A_0001")
@@ -253,3 +300,40 @@ def test_manual_mode_approval_applies_device_info_and_enqueues_after_successful_
     window._review_tab.advance_after_approval.assert_called_once_with()
     assert window._tabs.isTabEnabled(2)
     window._execution_tab.add_case.assert_called_once_with(manifest)
+
+
+def test_manual_batch_after_auto_batch_clears_stale_locked_device_when_no_dut_devices(tmp_path):
+    window = _make_window()
+    auto_workbook_path = tmp_path / "auto_cases.xlsx"
+    auto_workbook_path.write_text("", encoding="utf-8")
+    manual_workbook_path = tmp_path / "manual_cases.xlsx"
+    manual_workbook_path.write_text("", encoding="utf-8")
+    locked_device = {
+        "设备编号": "DUT-01",
+        "模组型号": "IMX989",
+        "采集模式": "HDR",
+    }
+
+    auto_manifest = _make_manifest("case_A_0001")
+    manual_manifest = _make_manifest("case_A_0002")
+    window._execution_tab.add_case = MagicMock()
+
+    window._tagging_tab._xlsx_writeback_path = auto_workbook_path
+    window._tagging_tab.auto_execution_enabled = MagicMock(return_value=True)
+    window._tagging_tab.selected_device_info = MagicMock(return_value=locked_device)
+    with patch("video_tagging_assistant.gui.main_window.load_dut_info", return_value=[locked_device]):
+        window._on_tagging_complete([{"manifest": auto_manifest, "ai_result": _make_ai_result(), "missing": False}])
+
+    assert window._review_tab._device_combo.count() == 1
+    assert window._review_tab._device_combo.currentData() == locked_device
+    assert not window._review_tab._device_combo.isEnabled()
+
+    window._tagging_tab._xlsx_writeback_path = manual_workbook_path
+    window._tagging_tab.auto_execution_enabled = MagicMock(return_value=False)
+    window._tagging_tab.selected_device_info = MagicMock(return_value={})
+    with patch("video_tagging_assistant.gui.main_window.load_dut_info", return_value=[]):
+        window._on_tagging_complete([{"manifest": manual_manifest, "ai_result": _make_ai_result(), "missing": False}])
+
+    assert window._review_tab._device_combo.count() == 0
+    assert window._review_tab._device_combo.currentData() is None
+    assert window._review_tab._device_combo.isEnabled()

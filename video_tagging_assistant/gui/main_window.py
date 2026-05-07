@@ -123,6 +123,10 @@ class MainWindow(QMainWindow):
             locked_device=self._locked_device_info,
         )
 
+        if not self._auto_execution_enabled and not dut_devices:
+            self._review_tab._device_combo.clear()
+            self._review_tab._device_combo.setEnabled(True)
+
         if self._auto_execution_enabled:
             self._tabs.setTabEnabled(2, True)
             for manifest in manifests:
@@ -135,6 +139,8 @@ class MainWindow(QMainWindow):
         try:
             self._write_review_outputs(manifest, tag_result)
         except Exception as exc:
+            self._review_tab._awaiting_parent_confirmation = False
+            self._review_tab._sync_action_buttons()
             self.statusBar().showMessage(str(exc), 0)
             return
 
