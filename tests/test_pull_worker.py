@@ -23,6 +23,20 @@ def test_consume_temp_pull_source_moves_matching_rk_dir_into_final(tmp_path):
     assert not source_dir.exists()
 
 
+def test_consume_temp_pull_source_creates_missing_final_parent_chain(tmp_path):
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    (source_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "a.txt").write_text("ok", encoding="utf-8")
+    final_dir = tmp_path / "missing" / "parent" / "case_A_0078_RK_raw_117"
+
+    consumed = consume_temp_pull_source(temp_root, "117", final_dir)
+
+    assert consumed is True
+    assert (final_dir / "nested" / "a.txt").read_text(encoding="utf-8") == "ok"
+    assert not source_dir.exists()
+
+
 def test_consume_temp_pull_source_keeps_source_when_final_is_already_complete(tmp_path):
     temp_root = tmp_path / "temp_pull_cache"
     source_dir = temp_root / "117"

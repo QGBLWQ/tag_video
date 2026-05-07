@@ -50,6 +50,7 @@ def consume_temp_pull_source(temp_root: Path, rk_suffix: str, final_dir: Path) -
         return False
 
     if not final_dir.exists():
+        final_dir.parent.mkdir(parents=True, exist_ok=True)
         candidate.rename(final_dir)
         if relative_file_set(final_dir) != source_files:
             final_dir.rename(candidate)
