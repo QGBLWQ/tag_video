@@ -520,11 +520,21 @@ def upsert_create_record_row(
         sheet = workbook["创建记录"]
 
     headers = _header_map(sheet)
-    target_row = sheet.max_row + 1
 
     # 构建服务器路径（Windows UNC 格式）
     server_case = str(manifest.server_case_dir).replace("/", "\\")
     case_id = manifest.case_id
+    target_row = None
+    case_id_column = headers.get("文件夹名")
+    if case_id_column is not None:
+        for row_index in range(2, sheet.max_row + 1):
+            current_case_id = str(sheet.cell(row_index, case_id_column).value or "").strip()
+            if current_case_id == case_id:
+                target_row = row_index
+                break
+    if target_row is None:
+        target_row = sheet.max_row + 1
+
     vs_nomal = f"{server_case}\\{case_id}_{manifest.vs_normal_path.name}"
     vs_night = f"{server_case}\\{case_id}_night_{manifest.vs_night_path.name}"
     raw_path = f"{server_case}\\{case_id}_RK_raw_{manifest.raw_path.name}"
