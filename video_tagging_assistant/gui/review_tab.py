@@ -64,6 +64,7 @@ class ReviewTab(QWidget):
         self._groups: dict = {}
         self._auto_mode = False
         self._locked_device = None
+        self._awaiting_parent_confirmation = False
         self._device_combo = QComboBox()
         self._setup_ui()
 
@@ -166,6 +167,12 @@ class ReviewTab(QWidget):
         if index >= 0:
             self._device_combo.setCurrentIndex(index)
 
+    def _sync_action_buttons(self) -> None:
+        has_current_case = bool(self._manifests) and self._current_index < len(self._manifests)
+        allow_actions = has_current_case and not self._awaiting_parent_confirmation
+        self._pass_btn.setEnabled(allow_actions)
+        self._skip_btn.setEnabled(allow_actions and not self._auto_mode)
+
     def load_cases(
         self,
         cases: list,
@@ -179,17 +186,16 @@ class ReviewTab(QWidget):
         self._current_index = 0
         self._auto_mode = auto_mode
         self._locked_device = locked_device if isinstance(locked_device, dict) else None
+        self._awaiting_parent_confirmation = False
 
         if self._auto_mode and self._locked_device:
             self._device_combo.clear()
             self._device_combo.addItem(_device_label(self._locked_device), self._locked_device)
             self._device_combo.setEnabled(False)
-            self._skip_btn.setEnabled(False)
         else:
             if dut_devices:
                 self._populate_device_combo(dut_devices)
             self._device_combo.setEnabled(True)
-            self._skip_btn.setEnabled(True)
 
         self._show_case(0)
 
@@ -197,6 +203,7 @@ class ReviewTab(QWidget):
         if not self._manifests or index >= len(self._manifests):
             self._progress_label.setText(f"{index}/{len(self._manifests)}")
             self._case_label.setText("\u5168\u90e8\u5ba1\u6838\u5b8c\u6bd5")
+            self._sync_action_buttons()
             return
 
         manifest = self._manifests[index]
@@ -218,12 +225,16 @@ class ReviewTab(QWidget):
         self._scene_desc_edit.setPlainText(ai_result.get("\u753b\u9762\u63cf\u8ff0", ""))
 
         self._rebuild_field_buttons(ai_result)
+        self._sync_action_buttons()
 
     def _advance(self) -> None:
         self._current_index += 1
         self._show_case(self._current_index)
 
     def advance_after_approval(self) -> None:
+        if not self._awaiting_parent_confirmation:
+            return
+        self._awaiting_parent_confirmation = False
         self._advance()
 
     def _collect_selections(self):
@@ -239,6 +250,9 @@ class ReviewTab(QWidget):
         return selections
 
     def _handle_pass(self) -> None:
+        if self._awaiting_parent_confirmation:
+            return
+
         selections = self._collect_selections()
         if selections is None:
             QMessageBox.warning(
@@ -261,9 +275,13 @@ class ReviewTab(QWidget):
             device_info=device_info,
             review_status="\u5ba1\u6838\u901a\u8fc7",
         )
+        self._awaiting_parent_confirmation = True
+        self._sync_action_buttons()
         self.case_approved.emit(manifest, tag_result)
 
     def _handle_skip(self) -> None:
+        if self._awaiting_parent_confirmation:
+            return
         self._advance()
 
     def _open_potplayer(self) -> None:

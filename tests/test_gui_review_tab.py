@@ -146,7 +146,7 @@ def test_review_tab_approve_with_all_fields_emits_case_approved():
     manifest, tag_result = approved_signals[0]
     assert manifest.case_id == "case_A_0001"
     assert isinstance(tag_result, TagResult)
-    assert tag_result.review_status
+    assert tag_result.review_status == "\u5ba1\u6838\u901a\u8fc7"
 
 
 def test_review_tab_load_cases_auto_mode_locks_device_and_disables_skip():
@@ -235,6 +235,58 @@ def test_review_tab_pass_emits_approval_without_advancing_until_parent_confirms(
     assert len(approved_signals) == 1
     assert tab._current_index == 0
     assert "case_A_0001" in tab._case_label.text()
+
+    tab.advance_after_approval()
+
+    assert tab._current_index == 1
+    assert "case_A_0002" in tab._case_label.text()
+
+
+def test_review_tab_pass_ignores_duplicate_clicks_while_awaiting_parent_confirmation():
+    from video_tagging_assistant.gui.review_tab import ReviewTab
+
+    tab = ReviewTab(_CONFIG, _TAG_OPTIONS)
+    manifests = [_make_manifest("case_A_0001")]
+    tagging_results = {"case_A_0001": _make_ai_result()}
+
+    approved_signals = []
+    tab.load_cases(manifests, tagging_results)
+    tab.case_approved.connect(lambda m, t: approved_signals.append((m, t)))
+    _select_first_option_per_group(tab)
+
+    tab._pass_btn.click()
+    tab._pass_btn.click()
+
+    assert len(approved_signals) == 1
+    assert tab._current_index == 0
+    assert not tab._pass_btn.isEnabled()
+    assert not tab._skip_btn.isEnabled()
+
+
+def test_review_tab_advance_after_approval_requires_single_pending_approval():
+    from video_tagging_assistant.gui.review_tab import ReviewTab
+
+    tab = ReviewTab(_CONFIG, _TAG_OPTIONS)
+    manifests = [_make_manifest("case_A_0001"), _make_manifest("case_A_0002")]
+    tagging_results = {
+        "case_A_0001": _make_ai_result(single_indexes=[0, 0, 0, 1], multi_indexes=[0, 0]),
+        "case_A_0002": _make_ai_result(single_indexes=[1, 1, 1, 0], multi_indexes=[1, 1]),
+    }
+
+    tab.load_cases(manifests, tagging_results)
+    tab.advance_after_approval()
+
+    assert tab._current_index == 0
+    assert "case_A_0001" in tab._case_label.text()
+
+    _select_first_option_per_group(tab)
+    tab._pass_btn.click()
+    tab.advance_after_approval()
+
+    assert tab._current_index == 1
+    assert "case_A_0002" in tab._case_label.text()
+    assert tab._pass_btn.isEnabled()
+    assert tab._skip_btn.isEnabled()
 
     tab.advance_after_approval()
 
