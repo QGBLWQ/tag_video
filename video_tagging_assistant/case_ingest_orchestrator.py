@@ -133,11 +133,15 @@ def move_case(manifest, config: dict) -> None:
       - {case_id}_RK_raw_{rk_suffix}    (adb pull 临时目录)
       - {case_id}_{vs_normal.name}      (DJI 普通视频)
       - {case_id}_night_{vs_night.name} (DJI 夜间视频，可选)
+
+    mode 优先取 manifest.mode（审核时根据设备动态决定），回退到 config["mode"]。
+    move 完成后清理空的 *_RK_raw_* 临时残留。
     """
     rk_suffix = manifest.raw_path.name
     case_id = manifest.case_id
     local_root = Path(config["local_case_root"])
-    dest_dir = local_root / config["mode"] / manifest.created_date / case_id
+    mode = (manifest.mode or "").strip() or config["mode"]
+    dest_dir = local_root / mode / manifest.created_date / case_id
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     shutil.move(
@@ -160,8 +164,16 @@ def move_case(manifest, config: dict) -> None:
                 str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
             )
 
+    # 清理空的临时目录残留：local_root 下任何以 case_id 开头的空目录都删掉
+    for entry in local_root.iterdir():
+        if entry.is_dir() and entry.name.startswith(case_id) and not any(entry.iterdir()):
+            try:
+                entry.rmdir()
+            except OSError:
+                pass
 
-def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 4) -> None:
+
+def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 8) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -194,13 +206,15 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
 
     将 {local_case_root}/{mode}/{created_date}/{case_id}
     整目录复制到 {server_upload_root}/{mode}/{created_date}/{case_id}
-    目标已存在时抛出 RuntimeError。
+    mode 优先取 manifest.mode，回退到 config["mode"]。
     """
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
-    src = local_root / config["mode"] / manifest.created_date / manifest.case_id
-    dest = server_root / config["mode"] / manifest.created_date / manifest.case_id
+    mode = (manifest.mode or "").strip() or config["mode"]
+    workers = int(config.get("upload_workers", 8))
+    src = local_root / mode / manifest.created_date / manifest.case_id
+    dest = server_root / mode / manifest.created_date / manifest.case_id
     if dest.exists() and any(f.is_file() for f in dest.rglob("*")):
         return  # already uploaded
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _copytree_with_progress(src, dest, progress_cb)
+    _copytree_with_progress(src, dest, progress_cb, workers=workers)
