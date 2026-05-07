@@ -46,9 +46,51 @@ def test_pull_case_calls_adb_with_correct_args(tmp_path: Path):
     assert "case_A_0078_RK_raw_117" in cmd[3]
 
 
+def test_pull_case_prefers_temp_path_and_skips_adb(tmp_path: Path):
+    manifest = _make_manifest(tmp_path)
+    config = _make_config(tmp_path)
+    temp_root = tmp_path / "temp_pull_cache"
+    source_dir = temp_root / "117"
+    (source_dir / "nested").mkdir(parents=True)
+    (source_dir / "nested" / "a.txt").write_text("staged", encoding="utf-8")
+    config["temp_path"] = str(temp_root)
+
+    with patch("subprocess.run") as mock_run:
+        pull_case(manifest, config)
+
+    dest = tmp_path / "case_A_0078_RK_raw_117"
+    assert (dest / "nested" / "a.txt").read_text(encoding="utf-8") == "staged"
+    assert not source_dir.exists()
+    mock_run.assert_not_called()
+
+
+@pytest.mark.parametrize("source_state", ["missing", "empty"])
+def test_pull_case_falls_back_to_adb_when_temp_path_is_missing_or_empty(tmp_path: Path, source_state: str):
+    manifest = _make_manifest(tmp_path)
+    config = _make_config(tmp_path)
+    temp_root = tmp_path / "temp_pull_cache"
+    config["temp_path"] = str(temp_root)
+
+    if source_state == "empty":
+        (temp_root / "117").mkdir(parents=True)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        pull_case(manifest, config)
+
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "adb.exe"
+    assert cmd[1] == "pull"
+    assert "/mnt/nvme/CapturedData/117" in cmd[2]
+    assert "case_A_0078_RK_raw_117" in cmd[3]
+
+
 def test_move_case_moves_to_structured_directory(tmp_path: Path):
     manifest = _make_manifest(tmp_path)
     config = _make_config(tmp_path)
+    manifest.vs_normal_path = tmp_path / "DJI_20260422151829_0001_D.MP4"
+    manifest.vs_normal_path.write_bytes(b"normal")
     # pull_case would create this directory
     src = tmp_path / "case_A_0078_RK_raw_117"
     src.mkdir(parents=True)
@@ -78,14 +120,18 @@ def test_upload_case_copies_directory_to_server(tmp_path: Path):
     assert dest.read_bytes() == b"upload"
 
 
-def test_upload_case_raises_if_destination_exists(tmp_path: Path):
+def test_upload_case_skips_when_destination_already_has_files(tmp_path: Path):
     manifest = _make_manifest(tmp_path)
     config = _make_config(tmp_path)
     case_dir = (tmp_path / "OV50H40_Action5Pro_DCG HDR" / "20260422" / "case_A_0078")
     case_dir.mkdir(parents=True)
+    (case_dir / "payload.bin").write_bytes(b"upload")
     dest = (tmp_path / "server" / "OV50H40_Action5Pro_DCG HDR"
             / "20260422" / "case_A_0078")
     dest.mkdir(parents=True)
+    (dest / "existing.bin").write_bytes(b"existing")
 
-    with pytest.raises(RuntimeError, match="already exists"):
-        upload_case(manifest, config)
+    upload_case(manifest, config)
+
+    assert (dest / "existing.bin").read_bytes() == b"existing"
+    assert not (dest / "payload.bin").exists()

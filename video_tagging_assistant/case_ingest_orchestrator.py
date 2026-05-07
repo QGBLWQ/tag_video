@@ -6,7 +6,11 @@ from queue import Queue
 from typing import Callable, Iterable
 
 from video_tagging_assistant.copy_worker import copy_declared_files
-from video_tagging_assistant.pull_worker import run_resumable_pull, wait_for_device
+from video_tagging_assistant.pull_worker import (
+    consume_temp_pull_source,
+    run_resumable_pull,
+    wait_for_device,
+)
 from video_tagging_assistant.upload_worker import upload_case_directory, upload_worker_loop
 
 
@@ -118,6 +122,12 @@ def pull_case(manifest, config: dict) -> None:
     """
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+    temp_path = str(config.get("temp_path") or "").strip()
+    if temp_path:
+        temp_root = Path(temp_path)
+        if temp_root.exists() and consume_temp_pull_source(temp_root, rk_suffix, dest):
+            return
+
     dest.mkdir(parents=True, exist_ok=True)
     remote_path = f"{config['dut_root']}/{rk_suffix}/."
     subprocess.run(
