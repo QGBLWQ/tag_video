@@ -1,6 +1,19 @@
-# 视频采集打标 GUI 工具
+# 视频打标与 Case Ingest 工具
 
 采集记录台账驱动的三阶段流水线：**AI 打标 → 人工审核 → 执行队列（pull / move / upload）**。
+
+同时保留独立的 **Case Ingest** 命令行流水线，用于按 bat 清单完成 `pull / move / upload` 批处理。
+
+---
+
+## 项目能力概览
+
+- 视频打标 GUI：从 Excel 台账读取 case，执行 AI 打标、人工审核，以及审核后的 pull / move / upload。
+- Case Ingest CLI：按 `pull.bat` / `move.bat` 和服务器根目录批量执行 case 入库。
+- 文档导航：
+  - 架构说明见 [`docs/architecture.md`](docs/architecture.md)
+  - GUI 配置见 [`docs/config-reference.md`](docs/config-reference.md)
+  - Case Ingest 用法见 [`docs/case-ingest-usage.md`](docs/case-ingest-usage.md)
 
 ---
 
@@ -10,11 +23,18 @@
 # 1. 复制配置模板并填写
 cp configs/config.example.json configs/config.json
 
-# 2. 启动 GUI
-python app.py
+# 2. 启动 GUI（也可以把 workbook_path 预先写进 configs/config.json）
+python -m video_tagging_assistant.cli case-pipeline-gui --workbook "你的台账.xlsx"
 ```
 
-配置字段说明见 [`docs/config-reference.md`](docs/config-reference.md)。
+Case Ingest 常用入口：
+
+```bash
+run_case_ingest.bat
+python -m video_tagging_assistant.cli case-ingest --config configs/case_ingest.json
+```
+
+配置字段说明见 [`docs/config-reference.md`](docs/config-reference.md)，整体结构说明见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
@@ -92,11 +112,17 @@ pip install -r requirements.txt
 
 ---
 
-## 配置
+## 关键配置文件
 
-配置文件：`configs/config.json`（从 `configs/config.example.json` 复制）
+| 文件 | 用途 |
+|------|------|
+| `configs/config.json` | GUI 运行配置，通常从 `configs/config.example.json` 复制后按机器环境填写 |
+| `configs/case_ingest.json` | Case Ingest 批处理配置，供 `run_case_ingest.bat` 或 `case-ingest` 子命令使用 |
+| `video_tagging_assistant/default_config.json` | 视频打标 CLI 默认配置样例，便于了解完整配置结构 |
 
-关键字段速查：
+当前 GUI 主要读取 `configs/config.json`；如果只跑 Case Ingest，则重点看 `configs/case_ingest.json` 和 [`docs/case-ingest-usage.md`](docs/case-ingest-usage.md)。
+
+`configs/config.json` 关键字段速查：
 
 | 字段 | 说明 |
 |------|------|
@@ -113,7 +139,7 @@ pip install -r requirements.txt
 
 ---
 
-## 输出目录
+## 输出位置
 
 ```
 output/
