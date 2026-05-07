@@ -16,6 +16,8 @@ from typing import Optional
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -29,7 +31,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.excel_workbook import load_get_list_manifests, get_next_case_sequence
+from video_tagging_assistant.excel_workbook import (
+    get_next_case_sequence,
+    load_dut_info,
+    load_get_list_manifests,
+)
 
 
 class _TaggingWorker(QThread):
@@ -131,6 +137,7 @@ class TaggingTab(QWidget):
         super().__init__(parent)
         self._config = config
         self._manifests: list = []
+        self._dut_devices: list = []
         self._worker: Optional[_TaggingWorker] = None
         self._xlsx_writeback_path: Optional[Path] = None
         self._setup_ui()
@@ -165,6 +172,15 @@ class TaggingTab(QWidget):
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
+        auto_row = QHBoxLayout()
+        self._auto_mode_check = QCheckBox("Auto execution")
+        self._device_combo = QComboBox()
+        self._device_combo.setEnabled(False)
+        auto_row.addWidget(self._auto_mode_check)
+        auto_row.addWidget(QLabel("DUT"))
+        auto_row.addWidget(self._device_combo, stretch=1)
+        layout.addLayout(auto_row)
+
         # 开始按钮 + 进度
         self._start_btn = QPushButton("开始")
         layout.addWidget(self._start_btn)
@@ -184,6 +200,7 @@ class TaggingTab(QWidget):
         self._browse_btn.clicked.connect(self._browse_workbook)
         self._load_btn.clicked.connect(self._load_cases_from_workbook)
         self._start_btn.clicked.connect(self._start_tagging)
+        self._auto_mode_check.toggled.connect(self._sync_auto_mode_widgets)
 
     def _browse_workbook(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -211,6 +228,7 @@ class TaggingTab(QWidget):
                 mode=self._config.get("mode", ""),
                 starting_sequence=starting_seq,
             )
+            self._dut_devices = load_dut_info(wb_path)
         except Exception as exc:
             self._error_list.addItem(f"加载失败: {exc}")
             return
@@ -233,6 +251,52 @@ class TaggingTab(QWidget):
                 f"{manifest.case_id}  {manifest.vs_normal_path.name}"
             )
 
+        self._device_combo.clear()
+        for device in self._dut_devices:
+            label_parts = [
+                device.get("\u8bbe\u5907\u7f16\u53f7", ""),
+                device.get("\u6a21\u7ec4\u578b\u53f7", ""),
+                device.get("\u91c7\u96c6\u6a21\u5f0f", ""),
+            ]
+            label = " / ".join(part for part in label_parts if part) or "DUT"
+            self._device_combo.addItem(label, device)
+        self._device_combo.setCurrentIndex(-1)
+        self._sync_auto_mode_widgets()
+
+    def _sync_auto_mode_widgets(self) -> None:
+        self._device_combo.setEnabled(
+            self._auto_mode_check.isChecked() and bool(self._dut_devices)
+        )
+
+    def auto_execution_enabled(self) -> bool:
+        return self._auto_mode_check.isChecked()
+
+    def selected_device_info(self) -> dict:
+        device_info = self._device_combo.currentData()
+        if isinstance(device_info, dict):
+            return device_info
+        return {}
+
+    def _validate_start(self) -> bool:
+        if not self.auto_execution_enabled():
+            return True
+
+        device_info = self.selected_device_info()
+        if not device_info:
+            self._on_error("Auto execution requires a selected DUT device.")
+            return False
+
+        required_fields = [
+            "\u6a21\u7ec4\u578b\u53f7",
+            "\u91c7\u96c6\u6a21\u5f0f",
+        ]
+        missing_fields = [field for field in required_fields if not device_info.get(field)]
+        if missing_fields:
+            self._on_error("Selected DUT device is missing required fields.")
+            return False
+
+        return True
+
     def _start_tagging(self) -> None:
         if not self._manifests:
             self._load_cases_from_workbook()
@@ -241,6 +305,8 @@ class TaggingTab(QWidget):
 
         mode = "rerun" if self._radio_rerun.isChecked() else "cached"
         self._error_list.clear()
+        if not self._validate_start():
+            return
         self._progress_bar.setMaximum(len(self._manifests))
         self._progress_bar.setValue(0)
         self._start_btn.setEnabled(False)

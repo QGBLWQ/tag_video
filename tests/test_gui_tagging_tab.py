@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -83,4 +84,115 @@ def test_tagging_tab_load_cases_from_workbook(tmp_path: Path):
     tab._load_cases_from_workbook()
 
     assert tab._case_list.count() == 1
-    assert "case_A_0001" in tab._case_list.item(0).text()
+    assert "DJI_0001.MP4" in tab._case_list.item(0).text()
+
+
+def test_tagging_tab_exposes_auto_mode_controls():
+    from video_tagging_assistant.gui.tagging_tab import TaggingTab
+
+    tab = TaggingTab(_CONFIG)
+
+    assert tab._auto_mode_check is not None
+    assert tab._device_combo is not None
+    assert not tab._auto_mode_check.isChecked()
+    assert not tab._device_combo.isEnabled()
+    assert tab.auto_execution_enabled() is False
+    assert tab.selected_device_info() == {}
+
+
+def test_load_cases_from_workbook_also_loads_dut_devices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import video_tagging_assistant.gui.tagging_tab as tagging_tab_module
+
+    manifests = [
+        SimpleNamespace(case_id="case_A_0001", vs_normal_path=Path("DJI_0001.MP4")),
+    ]
+    devices = [
+        {"设备编号": "DUT-001", "模组型号": "Module-A", "采集模式": "Mode-A"},
+        {"设备编号": "DUT-002", "模组型号": "Module-B", "采集模式": "Mode-B"},
+    ]
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(tagging_tab_module, "get_next_case_sequence", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(tagging_tab_module, "load_get_list_manifests", lambda **kwargs: manifests)
+    monkeypatch.setattr(tagging_tab_module, "load_dut_info", lambda path: devices, raising=False)
+
+    tab = tagging_tab_module.TaggingTab(_CONFIG)
+    tab._workbook_edit.setText(str(workbook_path))
+    tab._load_cases_from_workbook()
+
+    assert tab._dut_devices == devices
+    assert tab._device_combo.count() == len(devices)
+    assert tab._device_combo.itemData(0) == devices[0]
+    assert tab._device_combo.itemData(1) == devices[1]
+    assert not tab._device_combo.isEnabled()
+
+
+def test_start_tagging_requires_selected_device_when_auto_mode_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import video_tagging_assistant.gui.tagging_tab as tagging_tab_module
+
+    manifests = [
+        SimpleNamespace(case_id="case_A_0001", vs_normal_path=Path("DJI_0001.MP4")),
+    ]
+    devices = [
+        {"设备编号": "DUT-001", "模组型号": "Module-A", "采集模式": "Mode-A"},
+    ]
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(tagging_tab_module, "get_next_case_sequence", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(tagging_tab_module, "load_get_list_manifests", lambda **kwargs: manifests)
+    monkeypatch.setattr(tagging_tab_module, "load_dut_info", lambda path: devices, raising=False)
+
+    tab = tagging_tab_module.TaggingTab(_CONFIG)
+    tab._workbook_edit.setText(str(workbook_path))
+    tab._load_cases_from_workbook()
+    tab._auto_mode_check.setChecked(True)
+
+    assert tab._device_combo.currentIndex() == -1
+
+    tab._start_tagging()
+
+    assert tab._worker is None
+    assert tab._error_list.count() == 1
+    assert tab._start_btn.isEnabled()
+
+
+@pytest.mark.parametrize(
+    "device_info",
+    [
+        {"设备编号": "DUT-001", "模组型号": "", "采集模式": "Mode-A"},
+        {"设备编号": "DUT-001", "模组型号": "Module-A", "采集模式": ""},
+    ],
+)
+def test_start_tagging_rejects_selected_device_missing_required_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    device_info: dict,
+):
+    import video_tagging_assistant.gui.tagging_tab as tagging_tab_module
+
+    manifests = [
+        SimpleNamespace(case_id="case_A_0001", vs_normal_path=Path("DJI_0001.MP4")),
+    ]
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(tagging_tab_module, "get_next_case_sequence", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(tagging_tab_module, "load_get_list_manifests", lambda **kwargs: manifests)
+    monkeypatch.setattr(tagging_tab_module, "load_dut_info", lambda path: [device_info], raising=False)
+
+    tab = tagging_tab_module.TaggingTab(_CONFIG)
+    tab._workbook_edit.setText(str(workbook_path))
+    tab._load_cases_from_workbook()
+    tab._auto_mode_check.setChecked(True)
+    tab._device_combo.setCurrentIndex(0)
+
+    tab._start_tagging()
+
+    assert tab._worker is None
+    assert tab._error_list.count() == 1
+    assert tab._start_btn.isEnabled()
