@@ -143,19 +143,21 @@ def run_batch_tagging(
                 continue
         to_tag.append(manifest)
 
-    # Phase 1: parallel compression
-    tasks_by_id: Dict[str, VideoTask] = {}
+    # Combined pipeline: compress → immediately submit to AI
     artifacts_by_id: Dict[str, object] = {}
+    fresh_results: Dict[str, TaggingReviewRow] = {}
+    tasks_by_id: Dict[str, VideoTask] = {}
     total_to_tag = len(to_tag)
     compressed_count = 0
+    tagged_count = 0
 
-    with ThreadPoolExecutor(max_workers=max(1, compression_workers)) as executor:
-        future_map = {}
+    with ThreadPoolExecutor(max_workers=max(1, compression_workers)) as compress_pool:
+        compress_futures = {}
         for manifest in to_tag:
             task = _manifest_to_video_task(manifest)
             tasks_by_id[manifest.case_id] = task
-            f = executor.submit(compressor, task, compressed_dir, compression_config)
-            future_map[f] = manifest
+            f = compress_pool.submit(compressor, task, compressed_dir, compression_config)
+            compress_futures[f] = manifest
             event_callback(
                 PipelineEvent(
                     case_id=manifest.case_id,
@@ -166,98 +168,95 @@ def run_batch_tagging(
                     progress_total=total_to_tag,
                 )
             )
-        for f in as_completed(future_map):
-            manifest = future_map[f]
-            try:
-                artifacts_by_id[manifest.case_id] = f.result()
-                compressed_count += 1
+
+        with ThreadPoolExecutor(max_workers=max(1, provider_workers)) as ai_pool:
+            ai_futures = {}
+            for f in as_completed(compress_futures):
+                manifest = compress_futures[f]
+                try:
+                    artifacts_by_id[manifest.case_id] = f.result()
+                    compressed_count += 1
+                    event_callback(
+                        PipelineEvent(
+                            case_id=manifest.case_id,
+                            stage=RuntimeStage.TAGGING_RUNNING,
+                            event_type="info",
+                            message="compressed",
+                            progress_current=compressed_count,
+                            progress_total=total_to_tag,
+                        )
+                    )
+                except Exception as exc:
+                    event_callback(
+                        PipelineEvent(
+                            case_id=manifest.case_id,
+                            stage=RuntimeStage.TAGGING_RUNNING,
+                            event_type="error",
+                            message=f"压缩失败: {exc}",
+                        )
+                    )
+                    continue  # skip AI for this case
+
+                # Immediately submit AI task for this manifest
+                task = tasks_by_id[manifest.case_id]
+                artifact = artifacts_by_id[manifest.case_id]
+                context = build_prompt_context(
+                    task, artifact, prompt_template, case_row=_manifest_to_case_row(manifest)
+                )
                 event_callback(
                     PipelineEvent(
                         case_id=manifest.case_id,
                         stage=RuntimeStage.TAGGING_RUNNING,
                         event_type="info",
-                        message="compressed",
-                        progress_current=compressed_count,
-                        progress_total=total_to_tag,
-                    )
-                )
-            except Exception as exc:
-                event_callback(
-                    PipelineEvent(
-                        case_id=manifest.case_id,
-                        stage=RuntimeStage.TAGGING_RUNNING,
-                        event_type="error",
-                        message=f"压缩失败: {exc}",
-                    )
-                )
-
-    # Phase 2: parallel AI generation
-    fresh_results: Dict[str, TaggingReviewRow] = {}
-    tagged_count = 0
-
-    with ThreadPoolExecutor(max_workers=max(1, provider_workers)) as executor:
-        future_map = {}
-        for manifest in to_tag:
-            if manifest.case_id not in artifacts_by_id:
-                continue  # compression failed; skip
-            task = tasks_by_id[manifest.case_id]
-            artifact = artifacts_by_id[manifest.case_id]
-            context = build_prompt_context(
-                task, artifact, prompt_template, case_row=_manifest_to_case_row(manifest)
-            )
-            event_callback(
-                PipelineEvent(
-                    case_id=manifest.case_id,
-                    stage=RuntimeStage.TAGGING_RUNNING,
-                    event_type="info",
-                    message="tagging",
-                    progress_current=tagged_count,
-                    progress_total=total_to_tag,
-                )
-            )
-            f = executor.submit(_generate_with_retry, provider, context, concurrency)
-            future_map[f] = manifest
-
-        for f in as_completed(future_map):
-            manifest = future_map[f]
-            try:
-                generated = f.result()
-                tagged_count += 1
-                event_callback(
-                    PipelineEvent(
-                        case_id=manifest.case_id,
-                        stage=RuntimeStage.TAGGING_RUNNING,
-                        event_type="info",
-                        message="tagged",
+                        message="tagging",
                         progress_current=tagged_count,
                         progress_total=total_to_tag,
                     )
                 )
-            except Exception as exc:
-                event_callback(
-                    PipelineEvent(
-                        case_id=manifest.case_id,
-                        stage=RuntimeStage.TAGGING_RUNNING,
-                        event_type="error",
-                        message=f"AI 打标失败: {exc}",
+                ai_f = ai_pool.submit(_generate_with_retry, provider, context, concurrency)
+                ai_futures[ai_f] = manifest
+
+            for ai_f in as_completed(ai_futures):
+                manifest = ai_futures[ai_f]
+                try:
+                    generated = ai_f.result()
+                    tagged_count += 1
+                    event_callback(
+                        PipelineEvent(
+                            case_id=manifest.case_id,
+                            stage=RuntimeStage.TAGGING_RUNNING,
+                            event_type="info",
+                            message="tagged",
+                            progress_current=tagged_count,
+                            progress_total=total_to_tag,
+                        )
                     )
+                except Exception as exc:
+                    event_callback(
+                        PipelineEvent(
+                            case_id=manifest.case_id,
+                            stage=RuntimeStage.TAGGING_RUNNING,
+                            event_type="error",
+                            message=f"AI 打标失败: {exc}",
+                        )
+                    )
+                    continue
+
+                payload = {
+                    "summary_text": generated.summary_text,
+                    "tags": [f"{key}={value}" for key, value in generated.structured_tags.items()],
+                    "scene_description": generated.scene_description,
+                    "structured_tags": generated.structured_tags,
+                    "multi_select_tags": generated.multi_select_tags,
+                }
+                save_cached_result(cache_root, manifest, payload)
+                fresh_results[manifest.case_id] = TaggingReviewRow(
+                    case_id=manifest.case_id,
+                    auto_summary=generated.summary_text,
+                    auto_tags=";".join(payload["tags"]),
+                    auto_scene_description=generated.scene_description,
+                    tag_source="fresh",
                 )
-                continue
-            payload = {
-                "summary_text": generated.summary_text,
-                "tags": [f"{key}={value}" for key, value in generated.structured_tags.items()],
-                "scene_description": generated.scene_description,
-                "structured_tags": generated.structured_tags,
-                "multi_select_tags": generated.multi_select_tags,
-            }
-            save_cached_result(cache_root, manifest, payload)
-            fresh_results[manifest.case_id] = TaggingReviewRow(
-                case_id=manifest.case_id,
-                auto_summary=generated.summary_text,
-                auto_tags=";".join(payload["tags"]),
-                auto_scene_description=generated.scene_description,
-                tag_source="fresh",
-            )
 
     # Return in original manifest order
     all_results: List[TaggingReviewRow] = []
