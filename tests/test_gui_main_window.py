@@ -216,10 +216,24 @@ def test_main_window_relocks_and_reopens_review_when_alignment_changes(tmp_path)
 
     assert not window._alignment_ready
     assert not window._tabs.isTabEnabled(2)
+    assert not window._review_tab.isEnabled()
+    assert window._tabs.currentIndex() == 1
+
+    blocked_txt = tmp_path / "blocked.txt"
+    blocked_txt.write_text("blocked", encoding="utf-8")
+    with patch("video_tagging_assistant.gui.main_window.upsert_create_record_row"), patch(
+        "video_tagging_assistant.gui.main_window.write_case_txt",
+        return_value=blocked_txt,
+    ):
+        window._on_case_approved(manifest_two, _make_tag_result())
+
+    assert manifest_two.case_id not in window._approved_case_ids
+    window._execution_tab.add_case.assert_not_called()
 
     window._on_alignment_state_changed(2, 2, False)
 
     assert window._tabs.isTabEnabled(2)
+    assert window._review_tab.isEnabled()
     window._review_tab.load_cases.assert_called_once_with(
         [manifest_two],
         {"case_A_0002": {"瀹夎鏂瑰紡": "绌挎埓"}},
@@ -341,6 +355,7 @@ def test_auto_mode_approval_writes_outputs_advances_and_enqueues_once(tmp_path):
     workbook_path.write_text("", encoding="utf-8")
 
     window._auto_execution_enabled = True
+    window._alignment_ready = True
     window._workbook_path = workbook_path
     window._review_tab.advance_after_approval = MagicMock()
     window._execution_tab.add_case = MagicMock()
@@ -375,6 +390,7 @@ def test_auto_mode_approval_syncs_txt_to_existing_server_case_dir(tmp_path):
     workbook_path.write_text("", encoding="utf-8")
 
     window._auto_execution_enabled = True
+    window._alignment_ready = True
     window._workbook_path = workbook_path
     window._review_tab.advance_after_approval = MagicMock()
     window._execution_tab.add_case = MagicMock()
@@ -404,6 +420,7 @@ def test_auto_mode_existing_server_txt_sync_failure_blocks_advance(tmp_path):
     workbook_path.write_text("", encoding="utf-8")
 
     window._auto_execution_enabled = True
+    window._alignment_ready = True
     window._workbook_path = workbook_path
     window._review_tab.advance_after_approval = MagicMock()
     window._execution_tab.add_case = MagicMock()
@@ -430,6 +447,7 @@ def test_writeback_failure_keeps_current_case_in_place_and_does_not_advance(tmp_
     workbook_path.write_text("", encoding="utf-8")
 
     window._workbook_path = workbook_path
+    window._alignment_ready = True
     window._review_tab.advance_after_approval = MagicMock()
     window._execution_tab.add_case = MagicMock()
 
@@ -484,6 +502,7 @@ def test_manual_mode_approval_applies_device_info_and_enqueues_after_successful_
     workbook_path.write_text("", encoding="utf-8")
 
     window._auto_execution_enabled = False
+    window._alignment_ready = True
     window._workbook_path = workbook_path
     window._review_tab.advance_after_approval = MagicMock()
     window._execution_tab.add_case = MagicMock()

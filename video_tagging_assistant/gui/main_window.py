@@ -180,6 +180,11 @@ class MainWindow(QMainWindow):
         if not self._alignment_ready:
             self._tabs.setTabEnabled(2, False)
             self._review_loaded = False
+            self._review_tab.setEnabled(False)
+            if self._tabs.currentIndex() in (2, 3) and self._tabs.isTabEnabled(1):
+                self._tabs.setCurrentIndex(1)
+        else:
+            self._review_tab.setEnabled(True)
 
         self._maybe_enter_review()
 
@@ -243,6 +248,12 @@ class MainWindow(QMainWindow):
         self._review_loaded = True
 
     def _on_case_approved(self, manifest, tag_result) -> None:
+        if not self._alignment_ready:
+            self._review_tab._awaiting_parent_confirmation = False
+            self._review_tab._sync_action_buttons()
+            self.statusBar().showMessage("alignment is no longer ready", 0)
+            return
+
         if not self._auto_execution_enabled:
             self._apply_device_info_to_manifest(manifest, tag_result.device_info)
 
