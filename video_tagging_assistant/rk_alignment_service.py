@@ -293,7 +293,10 @@ def _confirmed_neighbor_bounds(
         if current_candidate_index is None:
             continue
         if current_row_index < row_index:
-            earlier_index = current_candidate_index
+            if earlier_index is None:
+                earlier_index = current_candidate_index
+            else:
+                earlier_index = max(earlier_index, current_candidate_index)
             continue
         later_index = current_candidate_index
         break

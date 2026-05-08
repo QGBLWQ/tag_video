@@ -208,6 +208,23 @@ def test_confirm_alignment_rejects_candidate_not_strictly_after_earlier_confirme
         confirm_alignment(state, row_index=4, candidate_name="31")
 
 
+def test_confirm_alignment_uses_effective_consumed_prefix_when_earlier_history_is_inconsistent(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
+    candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "32", 4: "31", 5: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    assert "row 4 has RK_raw=31 but it is not strictly after earlier confirmed rows" in state.blocked_messages
+
+    with pytest.raises(ValueError, match="not strictly after earlier confirmed rows"):
+        confirm_alignment(state, row_index=5, candidate_name="32")
+
+
 def test_confirm_clear_and_rewrite_guard_recompute_consumption_monotonically(tmp_path: Path):
     manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
     candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33")]
