@@ -188,34 +188,49 @@ def test_main_window_keeps_review_locked_until_alignment_and_tagging_finish(tmp_
 
 def test_main_window_relocks_and_reopens_review_when_alignment_changes(tmp_path):
     window = _make_window()
-    manifest = _make_manifest("case_A_0001", row_index=3)
-    results = [{"manifest": manifest, "ai_result": {"瀹夎鏂瑰紡": "鎵嬫寔"}, "missing": False}]
+    manifest_one = _make_manifest("case_A_0001", row_index=3)
+    manifest_two = _make_manifest("case_A_0002", row_index=4)
+    results = [
+        {"manifest": manifest_one, "ai_result": {"瀹夎鏂瑰紡": "鎵嬫寔"}, "missing": False},
+        {"manifest": manifest_two, "ai_result": {"瀹夎鏂瑰紡": "绌挎埓"}, "missing": False},
+    ]
     workbook_path = tmp_path / "records.xlsx"
     workbook_path.write_text("", encoding="utf-8")
+    window._execution_tab.add_case = MagicMock()
+    _enter_review(window, workbook_path, results)
+
     window._review_tab.load_cases = MagicMock()
+    window._review_tab.advance_after_approval = MagicMock()
+    approved_txt = tmp_path / "approved.txt"
+    approved_txt.write_text("ok", encoding="utf-8")
+    with patch("video_tagging_assistant.gui.main_window.upsert_create_record_row"), patch(
+        "video_tagging_assistant.gui.main_window.write_case_txt",
+        return_value=approved_txt,
+    ):
+        window._on_case_approved(manifest_one, _make_tag_result())
 
-    _load_batch(window, workbook_path, [manifest])
-    window._tagging_tab._xlsx_writeback_path = workbook_path
-    window._tagging_tab.auto_execution_enabled = MagicMock(return_value=False)
-    window._tagging_tab.selected_device_info = MagicMock(return_value={})
-    window._on_tagging_complete(results)
-    window._on_alignment_state_changed(1, 1, False)
+    assert window._execution_tab.add_case.call_count == 1
+    window._execution_tab.add_case.reset_mock()
 
-    assert window._tabs.isTabEnabled(2)
-    assert window._review_tab.load_cases.call_count == 1
-
-    window._on_alignment_state_changed(0, 1, False)
+    window._on_alignment_state_changed(1, 2, False)
 
     assert not window._alignment_ready
     assert not window._tabs.isTabEnabled(2)
 
-    window._on_alignment_state_changed(1, 1, False)
+    window._on_alignment_state_changed(2, 2, False)
 
     assert window._tabs.isTabEnabled(2)
-    assert window._review_tab.load_cases.call_count == 2
+    window._review_tab.load_cases.assert_called_once_with(
+        [manifest_two],
+        {"case_A_0002": {"瀹夎鏂瑰紡": "绌挎埓"}},
+        dut_devices=[],
+        auto_mode=False,
+        locked_device={},
+    )
+    window._execution_tab.add_case.assert_not_called()
 
 
-def test_auto_mode_tagging_completion_locks_selected_device_and_enqueues_all_cases(tmp_path):
+def test_auto_mode_tagging_completion_locks_selected_device_without_prequeueing_execution(tmp_path):
     window = _make_window()
     workbook_path = tmp_path / "cases.xlsx"
     workbook_path.write_text("", encoding="utf-8")
@@ -258,7 +273,7 @@ def test_auto_mode_tagging_completion_locks_selected_device_and_enqueues_all_cas
     assert window._locked_device_info == locked_device
     assert window._tabs.isTabEnabled(1)
     assert window._tabs.isTabEnabled(2)
-    assert window._tabs.isTabEnabled(3)
+    assert not window._tabs.isTabEnabled(3)
     assert window._tabs.currentIndex() == 2
     for manifest in (manifest_one, manifest_two):
         assert manifest.mode == expected_mode
@@ -275,12 +290,41 @@ def test_auto_mode_tagging_completion_locks_selected_device_and_enqueues_all_cas
         auto_mode=True,
         locked_device=locked_device,
     )
-    assert window._execution_tab.add_case.call_count == 2
-    window._execution_tab.add_case.assert_any_call(manifest_one)
-    window._execution_tab.add_case.assert_any_call(manifest_two)
+    window._execution_tab.add_case.assert_not_called()
 
 
-def test_auto_mode_approval_writes_outputs_and_advances_without_reenqueueing(tmp_path):
+def test_auto_mode_alignment_clear_keeps_execution_locked_until_case_approval(tmp_path):
+    window = _make_window()
+    workbook_path = tmp_path / "cases.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+    manifest = _make_manifest("case_A_0001", row_index=3)
+    locked_device = {
+        _DEVICE_ID_KEY: "DUT-01",
+        _DEVICE_MODEL_KEY: "IMX989",
+        _DEVICE_MODE_KEY: "HDR",
+    }
+
+    _load_batch(window, workbook_path, [manifest])
+    window._tagging_tab._xlsx_writeback_path = workbook_path
+    window._tagging_tab.auto_execution_enabled = MagicMock(return_value=True)
+    window._tagging_tab.selected_device_info = MagicMock(return_value=locked_device)
+    window._execution_tab.add_case = MagicMock()
+
+    with patch("video_tagging_assistant.gui.main_window.load_dut_info", return_value=[locked_device]):
+        window._on_tagging_complete([{"manifest": manifest, "ai_result": _make_ai_result(), "missing": False}])
+        window._on_alignment_state_changed(1, 1, False)
+
+    assert not window._tabs.isTabEnabled(3)
+    assert not window._execution_tab.add_case.called
+
+    window._on_alignment_state_changed(0, 1, False)
+
+    assert not window._tabs.isTabEnabled(2)
+    assert not window._tabs.isTabEnabled(3)
+    assert not window._execution_tab.add_case.called
+
+
+def test_auto_mode_approval_writes_outputs_advances_and_enqueues_once(tmp_path):
     window = _make_window()
     manifest = _make_manifest("case_A_0001")
     manifest.mode = "IMX989_HDR"
@@ -309,7 +353,8 @@ def test_auto_mode_approval_writes_outputs_and_advances_without_reenqueueing(tmp
     mock_upsert.assert_called_once_with(workbook_path, manifest, tag_result)
     mock_write_txt.assert_called_once_with(manifest, tag_result)
     window._review_tab.advance_after_approval.assert_called_once_with()
-    window._execution_tab.add_case.assert_not_called()
+    assert window._tabs.isTabEnabled(3)
+    window._execution_tab.add_case.assert_called_once()
 
 
 def test_auto_mode_approval_syncs_txt_to_existing_server_case_dir(tmp_path):
@@ -342,7 +387,7 @@ def test_auto_mode_approval_syncs_txt_to_existing_server_case_dir(tmp_path):
     assert server_txt_files[0].name.startswith("case_A_0001_")
     assert "case reviewed" in server_txt_files[0].read_text(encoding="gbk")
     window._review_tab.advance_after_approval.assert_called_once_with()
-    window._execution_tab.add_case.assert_not_called()
+    window._execution_tab.add_case.assert_called_once()
 
 
 def test_auto_mode_existing_server_txt_sync_failure_blocks_advance(tmp_path):

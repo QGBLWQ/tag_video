@@ -1,5 +1,6 @@
 """Three-tab main window coordinating tagging, review, and execution."""
 
+from copy import deepcopy
 import shutil
 from pathlib import Path
 
@@ -48,7 +49,8 @@ class MainWindow(QMainWindow):
         self._loaded_manifests = []
         self._pending_tagging_results = []
         self._review_loaded = False
-        self._execution_prequeued = False
+        self._approved_case_ids = set()
+        self._enqueued_case_ids = set()
 
         self.setWindowTitle("Video Tagging Pipeline")
 
@@ -136,7 +138,8 @@ class MainWindow(QMainWindow):
         self._alignment_total = 0
         self._pending_tagging_results = []
         self._review_loaded = False
-        self._execution_prequeued = False
+        self._approved_case_ids = set()
+        self._enqueued_case_ids = set()
 
         try:
             rk_raw_by_row = load_rk_raw_values(self._workbook_path, source_sheet="鑾峰彇鍒楄〃")
@@ -200,10 +203,18 @@ class MainWindow(QMainWindow):
         if not self._tagging_finished or not self._alignment_ready:
             return
 
-        manifests = [result["manifest"] for result in self._pending_tagging_results]
+        remaining_results = [
+            result
+            for result in self._pending_tagging_results
+            if result["manifest"].case_id not in self._approved_case_ids
+        ]
+        if not remaining_results:
+            return
+
+        manifests = [result["manifest"] for result in remaining_results]
         tagging_results = {
             result["manifest"].case_id: result["ai_result"]
-            for result in self._pending_tagging_results
+            for result in remaining_results
         }
         dut_devices = []
         try:
@@ -229,13 +240,6 @@ class MainWindow(QMainWindow):
             self._review_tab._device_combo.clear()
             self._review_tab._device_combo.setEnabled(True)
 
-        if self._auto_execution_enabled:
-            self._tabs.setTabEnabled(3, True)
-            if not self._execution_prequeued:
-                for manifest in manifests:
-                    self._execution_tab.add_case(manifest)
-                self._execution_prequeued = True
-
         self._review_loaded = True
 
     def _on_case_approved(self, manifest, tag_result) -> None:
@@ -252,11 +256,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(str(exc), 0)
             return
 
+        self._approved_case_ids.add(manifest.case_id)
         self._review_tab.advance_after_approval()
 
-        if not self._auto_execution_enabled:
+        if manifest.case_id not in self._enqueued_case_ids:
             self._tabs.setTabEnabled(3, True)
-            self._execution_tab.add_case(manifest)
+            self._execution_tab.add_case(deepcopy(manifest))
+            self._enqueued_case_ids.add(manifest.case_id)
 
     def closeEvent(self, event) -> None:
         self._worker.stop()
