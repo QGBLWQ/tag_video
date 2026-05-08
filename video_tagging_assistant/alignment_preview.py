@@ -38,6 +38,9 @@ def build_dji_preview_frames(
     ffmpeg_exe: str,
     frame_count: int = 30,
 ) -> List[Path]:
+    if not Path(video_path).exists():
+        raise FileNotFoundError(f"DJI preview source does not exist: {video_path}")
+
     cached_frames = sorted(output_dir.glob("frame_*.jpg"))
     if len(cached_frames) >= frame_count:
         return cached_frames[:frame_count]

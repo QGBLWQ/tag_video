@@ -51,7 +51,13 @@ def scan_rk_candidates(temp_root: str, dut_root: str) -> Tuple[Path | None, list
 
     dut_candidates, dut_logs = _scan_candidate_root(dut_path)
     if dut_path is not None:
-        return dut_path, dut_candidates, temp_logs + dut_logs
+        logs = temp_logs + dut_logs
+        if not dut_candidates:
+            logs.append(_empty_candidate_summary(dut_path))
+        return dut_path, dut_candidates, logs
+
+    if temp_path is not None and not temp_candidates:
+        return temp_path, temp_candidates, temp_logs + [_empty_candidate_summary(temp_path)]
     return temp_path, temp_candidates, temp_logs
 
 
@@ -139,7 +145,7 @@ def _scan_candidate_root(root: Path | None) -> Tuple[list[RkCandidate], list[str
             continue
         preview_path = _find_preview_path(child)
         if preview_path is None:
-            bad_logs.append(f"{child.name} is missing a preview jpg/jpeg file")
+            bad_logs.append(f"RK candidate {child.name} under {root} is missing a preview jpg/jpeg file")
             continue
         has_x_suffix = child.name.endswith("x")
         candidates.append(
@@ -160,6 +166,17 @@ def _find_preview_path(folder_path: Path) -> Path | None:
         if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg"}:
             return child
     return None
+
+
+def _matched_candidate_directory_count(root: Path | None) -> int:
+    if root is None or not root.exists() or not root.is_dir():
+        return 0
+    return sum(1 for child in root.iterdir() if child.is_dir() and _RK_DIR_PATTERN.fullmatch(child.name))
+
+
+def _empty_candidate_summary(root: Path) -> str:
+    matched_directory_count = _matched_candidate_directory_count(root)
+    return f"RK scan root {root}: found {matched_directory_count} numeric directories, 0 valid RK candidates"
 
 
 def _recompute_state(

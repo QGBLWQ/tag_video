@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,3 +91,22 @@ def test_build_dji_preview_frames_reuses_cached_frames_without_regeneration(tmp_
     )
 
     assert [frame.name for frame in frames] == cached_names
+
+
+def test_build_dji_preview_frames_raises_clear_error_when_video_source_is_missing(tmp_path: Path, monkeypatch):
+    video_path = tmp_path / "missing.mp4"
+    output_dir = tmp_path / "preview_frames"
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called when the source video is missing")
+
+    monkeypatch.setattr("video_tagging_assistant.alignment_preview.subprocess.run", fail_if_called)
+
+    with pytest.raises(FileNotFoundError, match=re.escape(str(video_path))):
+        build_dji_preview_frames(
+            video_path=video_path,
+            output_dir=output_dir,
+            ffprobe_exe="ffprobe",
+            ffmpeg_exe="ffmpeg",
+            frame_count=3,
+        )

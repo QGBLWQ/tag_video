@@ -106,6 +106,21 @@ def test_scan_rk_candidates_preserves_temp_bad_logs_when_falling_back_to_dut_roo
     assert any("33" in log for log in bad_logs)
 
 
+def test_scan_rk_candidates_logs_scanned_root_and_zero_valid_candidates(tmp_path: Path):
+    temp_root = tmp_path / "temp_root"
+    dut_root = tmp_path / "dut_root"
+    temp_root.mkdir()
+    dut_root.mkdir()
+    _mkdir_candidate(dut_root, "40", preview_name=None)
+
+    source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), str(dut_root))
+
+    assert source_root == dut_root
+    assert candidates == []
+    assert any(str(dut_root) in log for log in bad_logs)
+    assert any("0 valid RK candidates" in log for log in bad_logs)
+
+
 def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_path: Path, monkeypatch):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
@@ -136,7 +151,8 @@ def test_scan_rk_candidates_does_not_scan_cwd_when_dut_root_is_blank(tmp_path: P
 
     assert source_root == temp_root
     assert candidates == []
-    assert bad_logs == []
+    assert any(str(temp_root) in log for log in bad_logs)
+    assert any("0 valid RK candidates" in log for log in bad_logs)
 
 
 def test_build_alignment_batch_state_uses_historical_prefix_and_marks_pending_rows(tmp_path: Path):

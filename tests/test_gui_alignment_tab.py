@@ -390,3 +390,32 @@ def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: 
     assert "preview generation failed" in tab._log_panel.toPlainText()
     assert not tab._confirm_btn.isEnabled()
     assert write_calls == []
+
+
+def test_alignment_tab_preview_failure_logs_full_video_paths_and_existence(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest = _make_manifest(tmp_path)
+    manifest.vs_normal_path.write_bytes(b"video")
+    candidates = _make_candidates(tmp_path / "rk-source", "31")
+    state = build_alignment_batch_state(
+        manifests=[manifest],
+        rk_raw_by_row={manifest.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    def _raise_preview_error(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
+        raise RuntimeError("ffmpeg failed")
+
+    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _raise_preview_error)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+
+    log_text = tab._log_panel.toPlainText()
+    assert str(manifest.vs_normal_path) in log_text
+    assert str(manifest.vs_night_path) in log_text
+    assert "exists=True" in log_text
+    assert "exists=False" in log_text

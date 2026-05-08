@@ -200,15 +200,17 @@ class AlignmentTab(QWidget):
         cache_root = self._preview_cache_root(case.manifest)
         ffprobe_exe = self._config.get("ffprobe_exe", "ffprobe")
         ffmpeg_exe = self._config.get("ffmpeg_exe", "ffmpeg")
+        normal_path = Path(case.manifest.vs_normal_path)
+        night_path = Path(case.manifest.vs_night_path)
         try:
             normal_frames = build_dji_preview_frames(
-                case.manifest.vs_normal_path,
+                normal_path,
                 cache_root / "normal",
                 ffprobe_exe,
                 ffmpeg_exe,
             )
             night_frames = build_dji_preview_frames(
-                case.manifest.vs_night_path,
+                night_path,
                 cache_root / "night",
                 ffprobe_exe,
                 ffmpeg_exe,
@@ -219,7 +221,15 @@ class AlignmentTab(QWidget):
             self._night_preview_list.clear()
             self._rk_preview_label.clear()
             self._rk_preview_label.setText("\u9884\u89c8\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5 DJI \u89c6\u9891")
-            self._append_log(f"{case.manifest.case_id} preview generation failed: {exc}")
+            self._append_log(
+                f"{case.manifest.case_id} DJI normal preview source: {normal_path} (exists={normal_path.exists()})"
+            )
+            self._append_log(
+                f"{case.manifest.case_id} DJI night preview source: {night_path} (exists={night_path.exists()})"
+            )
+            self._append_log(
+                f"{case.manifest.case_id} preview generation failed with ffprobe={ffprobe_exe} ffmpeg={ffmpeg_exe}: {exc}"
+            )
             self._render_logs()
             return False
 
