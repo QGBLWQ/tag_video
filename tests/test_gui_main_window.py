@@ -217,6 +217,71 @@ def test_auto_mode_approval_writes_outputs_and_advances_without_reenqueueing(tmp
     window._execution_tab.add_case.assert_not_called()
 
 
+def test_auto_mode_approval_syncs_txt_to_existing_server_case_dir(tmp_path):
+    window = _make_window()
+    manifest = _make_manifest("case_A_0001")
+    manifest.mode = "IMX989_HDR"
+    manifest.local_case_root = tmp_path / "local" / "IMX989_HDR" / "20260422" / "case_A_0001"
+    manifest.server_case_dir = tmp_path / "server" / "IMX989_HDR" / "20260422" / "case_A_0001"
+    manifest.server_case_dir.mkdir(parents=True, exist_ok=True)
+    tag_result = _make_tag_result(
+        {
+            "璁惧缂栧彿": "DUT-01",
+            "妯＄粍鍨嬪彿": "IMX989",
+            "閲囬泦妯″紡": "HDR",
+        }
+    )
+    workbook_path = tmp_path / "cases.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    window._auto_execution_enabled = True
+    window._workbook_path = workbook_path
+    window._review_tab.advance_after_approval = MagicMock()
+    window._execution_tab.add_case = MagicMock()
+
+    with patch("video_tagging_assistant.gui.main_window.upsert_create_record_row"):
+        window._on_case_approved(manifest, tag_result)
+
+    server_txt_files = list(manifest.server_case_dir.glob("*.txt"))
+    assert len(server_txt_files) == 1
+    assert server_txt_files[0].name.startswith("case_A_0001_")
+    assert "case reviewed" in server_txt_files[0].read_text(encoding="gbk")
+    window._review_tab.advance_after_approval.assert_called_once_with()
+    window._execution_tab.add_case.assert_not_called()
+
+
+def test_auto_mode_existing_server_txt_sync_failure_blocks_advance(tmp_path):
+    window = _make_window()
+    manifest = _make_manifest("case_A_0001")
+    manifest.local_case_root = tmp_path / "local" / "OV50H40_Action5Pro_DCG HDR" / "20260422" / "case_A_0001"
+    manifest.server_case_dir = tmp_path / "server" / "OV50H40_Action5Pro_DCG HDR" / "20260422" / "case_A_0001"
+    manifest.server_case_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = manifest.local_case_root / "case_A_0001_case reviewed.txt"
+    txt_path.parent.mkdir(parents=True, exist_ok=True)
+    txt_path.write_text("case reviewed", encoding="gbk")
+    tag_result = _make_tag_result()
+    workbook_path = tmp_path / "cases.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+
+    window._auto_execution_enabled = True
+    window._workbook_path = workbook_path
+    window._review_tab.advance_after_approval = MagicMock()
+    window._execution_tab.add_case = MagicMock()
+
+    with patch("video_tagging_assistant.gui.main_window.upsert_create_record_row"), patch(
+        "video_tagging_assistant.gui.main_window.write_case_txt",
+        return_value=txt_path,
+    ), patch(
+        "video_tagging_assistant.gui.main_window.shutil.copy2",
+        side_effect=PermissionError("copy failed"),
+    ):
+        window._on_case_approved(manifest, tag_result)
+
+    window._review_tab.advance_after_approval.assert_not_called()
+    window._execution_tab.add_case.assert_not_called()
+    assert "txt" in window.statusBar().currentMessage()
+
+
 def test_writeback_failure_keeps_current_case_in_place_and_does_not_advance(tmp_path):
     window = _make_window()
     manifest = _make_manifest("case_A_0001")

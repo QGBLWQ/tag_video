@@ -1,5 +1,6 @@
 """Three-tab main window coordinating tagging, review, and execution."""
 
+import shutil
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -77,7 +78,7 @@ class MainWindow(QMainWindow):
                 Path(server_upload_root) / new_mode / manifest.created_date / manifest.case_id
             )
 
-    def _write_review_outputs(self, manifest, tag_result) -> None:
+    def _write_review_outputs(self, manifest, tag_result) -> Path:
         if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
@@ -85,11 +86,24 @@ class MainWindow(QMainWindow):
                 raise RuntimeError(f"写回失败: {exc}") from exc
 
         try:
-            write_case_txt(manifest, tag_result)
+            txt_path = write_case_txt(manifest, tag_result)
         except Exception as exc:
             raise RuntimeError(f"txt 生成失败: {exc}") from exc
 
         self.statusBar().showMessage(f"已写入 {manifest.case_id}", 3000)
+        return txt_path
+
+    def _sync_case_txt_to_server(self, manifest, txt_path) -> None:
+        server_case_dir = Path(manifest.server_case_dir)
+        if not server_case_dir.exists():
+            return
+        if not isinstance(txt_path, Path) or not txt_path.exists():
+            return
+
+        try:
+            shutil.copy2(str(txt_path), str(server_case_dir / txt_path.name))
+        except Exception as exc:
+            raise RuntimeError(f"txt 上传失败: {exc}") from exc
 
     def _on_tagging_complete(self, results: list) -> None:
         if self._tagging_tab._xlsx_writeback_path:
@@ -137,7 +151,9 @@ class MainWindow(QMainWindow):
             self._apply_device_info_to_manifest(manifest, tag_result.device_info)
 
         try:
-            self._write_review_outputs(manifest, tag_result)
+            txt_path = self._write_review_outputs(manifest, tag_result)
+            if self._auto_execution_enabled:
+                self._sync_case_txt_to_server(manifest, txt_path)
         except Exception as exc:
             self._review_tab._awaiting_parent_confirmation = False
             self._review_tab._sync_action_buttons()
