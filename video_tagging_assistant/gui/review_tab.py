@@ -1,4 +1,8 @@
-"""Review UI for manually confirming AI tagging results one case at a time."""
+"""审核页界面。
+
+负责按 case 逐条展示 AI 打标结果，并由人工补全单选/多选字段、
+修订画面描述、选择设备信息后确认通过。
+"""
 
 import subprocess
 from pathlib import Path
@@ -41,6 +45,7 @@ _MULTI_FIELDS = ["\u753b\u9762\u7279\u5f81", "\u5f71\u50cf\u8868\u8fbe"]
 
 
 def _device_label(device: dict) -> str:
+    """把设备字典格式化成下拉框中可读的一行文本。"""
     label_parts = [
         device.get("\u8bbe\u5907\u7f16\u53f7", ""),
         device.get("\u6a21\u7ec4\u578b\u53f7", ""),
@@ -50,7 +55,7 @@ def _device_label(device: dict) -> str:
 
 
 class ReviewTab(QWidget):
-    """Tab 2: manual review for each tagged case."""
+    """第二个主流程 Tab：逐条人工审核打标结果。"""
 
     case_approved = pyqtSignal(object, object)  # (CaseManifest, TagResult)
 
@@ -63,12 +68,14 @@ class ReviewTab(QWidget):
         self._current_index = 0
         self._groups: dict = {}
         self._auto_mode = False
+        self._reviewed_history: list = []  # (manifest, tag_result, selections) tuples
         self._locked_device = None
         self._awaiting_parent_confirmation = False
         self._device_combo = QComboBox()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        """初始化审核页控件与按钮事件。"""
         outer = QVBoxLayout(self)
 
         info_row = QHBoxLayout()
@@ -108,18 +115,22 @@ class ReviewTab(QWidget):
         outer.addLayout(note_row)
 
         btn_row = QHBoxLayout()
+        self._prev_btn = QPushButton("\u2190 \u4e0a\u4e00\u4e2a")
         self._pass_btn = QPushButton("\u2714 \u901a\u8fc7")
         self._skip_btn = QPushButton("\u2192 \u8df3\u8fc7")
+        btn_row.addWidget(self._prev_btn)
         btn_row.addWidget(self._pass_btn)
         btn_row.addWidget(self._skip_btn)
         btn_row.addStretch()
         outer.addLayout(btn_row)
 
         self._preview_btn.clicked.connect(self._open_potplayer)
+        self._prev_btn.clicked.connect(self._go_previous)
         self._pass_btn.clicked.connect(self._handle_pass)
         self._skip_btn.clicked.connect(self._handle_skip)
 
     def _rebuild_field_buttons(self, ai_result: dict) -> None:
+        """根据当前 AI 结果重建所有字段的单选按钮组。"""
         while self._fields_layout.rowCount() > 0:
             self._fields_layout.removeRow(0)
         self._groups.clear()
@@ -159,6 +170,7 @@ class ReviewTab(QWidget):
             self._fields_layout.addRow(f"{field}\uff08AI \u5efa\u8bae\uff0c\u9009\u4e00\uff09:", row_widget)
 
     def _populate_device_combo(self, dut_devices) -> None:
+        """刷新设备下拉框，并尽量保留之前的选择。"""
         previous_label = self._device_combo.currentText()
         self._device_combo.clear()
         for device in dut_devices:
@@ -168,10 +180,15 @@ class ReviewTab(QWidget):
             self._device_combo.setCurrentIndex(index)
 
     def _sync_action_buttons(self) -> None:
+        """根据当前 case 状态刷新通过/跳过按钮是否可点击。"""
         has_current_case = bool(self._manifests) and self._current_index < len(self._manifests)
         allow_actions = has_current_case and not self._awaiting_parent_confirmation
         self._pass_btn.setEnabled(allow_actions)
         self._skip_btn.setEnabled(allow_actions and not self._auto_mode)
+        if self._prev_btn:
+            self._prev_btn.setEnabled(
+                self._current_index > 0 and not self._awaiting_parent_confirmation
+            )
 
     def load_cases(
         self,
@@ -181,9 +198,11 @@ class ReviewTab(QWidget):
         auto_mode: bool = False,
         locked_device=None,
     ) -> None:
+        """装载一批待审核 case，并根据模式初始化设备选择状态。"""
         self._manifests = cases
         self._tagging_results = tagging_results
         self._current_index = 0
+        self._reviewed_history = []
         self._auto_mode = auto_mode
         self._locked_device = locked_device if isinstance(locked_device, dict) else None
         self._awaiting_parent_confirmation = False
@@ -200,6 +219,7 @@ class ReviewTab(QWidget):
         self._show_case(0)
 
     def _show_case(self, index: int) -> None:
+        """把指定索引的 case 渲染到审核界面。"""
         if not self._manifests or index >= len(self._manifests):
             self._progress_label.setText(f"{index}/{len(self._manifests)}")
             self._case_label.setText("\u5168\u90e8\u5ba1\u6838\u5b8c\u6bd5")
@@ -228,16 +248,19 @@ class ReviewTab(QWidget):
         self._sync_action_buttons()
 
     def _advance(self) -> None:
+        """切换到下一个待审核 case。"""
         self._current_index += 1
         self._show_case(self._current_index)
 
     def advance_after_approval(self) -> None:
+        """父窗口写回成功后，正式推进到下一条 case。"""
         if not self._awaiting_parent_confirmation:
             return
         self._awaiting_parent_confirmation = False
         self._advance()
 
     def _collect_selections(self):
+        """收集当前各字段的人工选择，若未选满则返回 None。"""
         selections = {}
         for field in list(_SINGLE_FIELDS) + list(_MULTI_FIELDS):
             group = self._groups.get(field)
@@ -250,6 +273,7 @@ class ReviewTab(QWidget):
         return selections
 
     def _handle_pass(self) -> None:
+        """组装人工审核结果，并通知父窗口执行后续写回逻辑。"""
         if self._awaiting_parent_confirmation:
             return
 
@@ -275,16 +299,39 @@ class ReviewTab(QWidget):
             device_info=device_info,
             review_status="\u5ba1\u6838\u901a\u8fc7",
         )
+        self._reviewed_history.append((manifest, tag_result, selections))
         self._awaiting_parent_confirmation = True
         self._sync_action_buttons()
         self.case_approved.emit(manifest, tag_result)
 
     def _handle_skip(self) -> None:
+        """跳过当前 case，仅在非全自动模式下可用。"""
         if self._awaiting_parent_confirmation:
             return
         self._advance()
 
+    def _go_previous(self) -> None:
+        """回到上一个 case，恢复其字段选择以供修改后重新通过。"""
+        if not self._reviewed_history:
+            return
+        if self._current_index == 0:
+            return
+
+        self._current_index -= 1
+        prev_manifest, prev_tag_result, prev_selections = self._reviewed_history.pop()
+        self._show_case(self._current_index)
+
+        # 恢复之前保存的字段选择
+        self._scene_desc_edit.setPlainText(prev_tag_result.scene_description)
+        for field, group in self._groups.items():
+            target_value = prev_selections.get(field, "")
+            for button in group.buttons():
+                if button.text() == target_value:
+                    button.setChecked(True)
+                    break
+
     def _open_potplayer(self) -> None:
+        """调用 PotPlayer 打开当前 normal 视频，便于人工复核。"""
         if not self._manifests or self._current_index >= len(self._manifests):
             return
 
