@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 
+from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication
 
@@ -60,19 +61,100 @@ def _make_candidates(tmp_path: Path, *names: str) -> List[RkCandidate]:
     return candidates
 
 
-def _patch_preview_builder(monkeypatch, alignment_tab_module):
-    def _build_preview_frames(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        frames = []
-        for index in range(2):
-            frame_path = output_dir / f"frame_{index:03d}.jpg"
-            pixmap = QPixmap(24, 24)
-            pixmap.fill()
-            pixmap.save(str(frame_path), "JPG")
-            frames.append(frame_path)
-        return frames
+class _PreviewWorkerStub(QObject):
+    preview_result = pyqtSignal(object)
+    log_message = pyqtSignal(str)
+    finished = pyqtSignal()
 
-    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _build_preview_frames)
+    created = []
+
+    def __init__(self, config: dict, manifests: list, parent=None) -> None:
+        super().__init__(parent)
+        self.config = config
+        self.manifests = list(manifests)
+        self.started = False
+        self.stopped = False
+        self.wait_calls = []
+        type(self).created.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def wait(self, msecs=None) -> bool:
+        self.wait_calls.append(msecs)
+        return True
+
+
+def _install_preview_worker_stub(monkeypatch, alignment_tab_module):
+    _PreviewWorkerStub.created = []
+    monkeypatch.setattr(alignment_tab_module, "AlignmentPreviewWorker", _PreviewWorkerStub)
+    return _PreviewWorkerStub
+
+
+def _write_preview_frames(output_dir: Path, count: int = 2) -> List[Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for index in range(count):
+        frame_path = output_dir / f"frame_{index:03d}.jpg"
+        pixmap = QPixmap(24, 24)
+        pixmap.fill()
+        pixmap.save(str(frame_path), "JPG")
+        frames.append(frame_path)
+    return frames
+
+
+def _prepared_payload(tmp_path: Path, manifest: CaseManifest) -> dict:
+    return {
+        "row_index": manifest.row_index,
+        "case_id": manifest.case_id,
+        "status": "prepared",
+        "normal_source": manifest.vs_normal_path,
+        "night_source": manifest.vs_night_path,
+        "normal_frames": _write_preview_frames(tmp_path / "prepared" / manifest.case_id / "normal"),
+        "night_frames": _write_preview_frames(tmp_path / "prepared" / manifest.case_id / "night"),
+    }
+
+
+def _failed_payload(manifest: CaseManifest, error: str = "ffmpeg failed") -> dict:
+    return {
+        "row_index": manifest.row_index,
+        "case_id": manifest.case_id,
+        "status": "failed",
+        "normal_source": manifest.vs_normal_path,
+        "night_source": manifest.vs_night_path,
+        "normal_exists": Path(manifest.vs_normal_path).exists(),
+        "night_exists": Path(manifest.vs_night_path).exists(),
+        "error": error,
+    }
+
+
+def test_alignment_tab_load_batch_starts_background_preparation(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest = _make_manifest(tmp_path)
+    candidates = _make_candidates(tmp_path / "rk-source", "31")
+    state = build_alignment_batch_state(
+        manifests=[manifest],
+        rk_raw_by_row={manifest.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+
+    assert len(worker_cls.created) == 1
+    worker = worker_cls.created[0]
+    assert worker.started
+    assert worker.manifests == [manifest]
+
+    tab.shutdown()
+    assert worker.stopped
 
 
 def test_alignment_tab_loads_pending_cases_and_bad_logs(tmp_path: Path, monkeypatch):
@@ -91,13 +173,20 @@ def test_alignment_tab_loads_pending_cases_and_bad_logs(tmp_path: Path, monkeypa
         candidates=candidates,
         bad_directory_logs=bad_logs,
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
 
     assert tab._queue_list.count() == 1
     assert "missing preview" in tab._log_panel.toPlainText()
+    assert "\u9884\u89c8\u51c6\u5907\u4e2d" in tab._rk_preview_label.text()
+    assert tab._normal_preview_list.count() == 0
+    assert tab._night_preview_list.count() == 0
+    assert not tab._confirm_btn.isEnabled()
+
+    worker_cls.created[0].preview_result.emit(_prepared_payload(tmp_path, manifest))
+
     assert tab._normal_preview_list.count() == 2
     assert tab._night_preview_list.count() == 2
     assert not tab._normal_preview_list.item(0).icon().isNull()
@@ -116,7 +205,7 @@ def test_alignment_tab_switches_candidates_with_next_and_previous(tmp_path: Path
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    _install_preview_worker_stub(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
@@ -128,6 +217,32 @@ def test_alignment_tab_switches_candidates_with_next_and_previous(tmp_path: Path
 
     tab._prev_btn.click()
     assert tab._candidate_label.text().startswith("31")
+
+
+def test_alignment_tab_confirm_stays_disabled_until_preview_ready(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest = _make_manifest(tmp_path)
+    candidates = _make_candidates(tmp_path / "rk-source", "31")
+    state = build_alignment_batch_state(
+        manifests=[manifest],
+        rk_raw_by_row={manifest.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+
+    assert not tab._confirm_btn.isEnabled()
+
+    worker_cls.created[0].preview_result.emit(_failed_payload(manifest))
+    assert not tab._confirm_btn.isEnabled()
+
+    worker_cls.created[0].preview_result.emit(_prepared_payload(tmp_path, manifest))
+    assert tab._confirm_btn.isEnabled()
 
 
 def test_alignment_tab_confirm_writes_rk_raw_and_emits_state_change(tmp_path: Path, monkeypatch):
@@ -142,7 +257,7 @@ def test_alignment_tab_confirm_writes_rk_raw_and_emits_state_change(tmp_path: Pa
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
     write_calls = []
     emitted = []
 
@@ -154,6 +269,7 @@ def test_alignment_tab_confirm_writes_rk_raw_and_emits_state_change(tmp_path: Pa
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.alignment_state_changed.connect(lambda confirmed, total, blocked: emitted.append((confirmed, total, blocked)))
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+    worker_cls.created[0].preview_result.emit(_prepared_payload(tmp_path, manifest))
 
     tab._confirm_btn.click()
 
@@ -174,7 +290,7 @@ def test_alignment_tab_load_rewrite_rows_displays_selected_aligned_case(tmp_path
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    _install_preview_worker_stub(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
@@ -200,7 +316,7 @@ def test_alignment_tab_rewrite_button_updates_service_state(tmp_path: Path, monk
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    _install_preview_worker_stub(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
@@ -224,7 +340,7 @@ def test_alignment_tab_clear_reopens_case(tmp_path: Path, monkeypatch):
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    _install_preview_worker_stub(monkeypatch, alignment_tab_module)
     clear_calls = []
 
     def _clear_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int) -> None:
@@ -260,7 +376,7 @@ def test_alignment_tab_invalid_confirm_does_not_write_workbook(tmp_path: Path, m
         candidates=candidates,
         bad_directory_logs=[],
     )
-    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
     write_calls = []
 
     def _write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
@@ -275,6 +391,7 @@ def test_alignment_tab_invalid_confirm_does_not_write_workbook(tmp_path: Path, m
         tmp_path / "writeback.xlsx",
         state,
     )
+    worker_cls.created[0].preview_result.emit(_prepared_payload(tmp_path, manifest_one))
     tab.load_rewrite_rows([manifest_one.row_index])
     tab._next_btn.click()
     tab._confirm_btn.click()
@@ -283,77 +400,40 @@ def test_alignment_tab_invalid_confirm_does_not_write_workbook(tmp_path: Path, m
     assert "confirm failed" in tab._log_panel.toPlainText()
 
 
-def test_alignment_tab_initial_render_builds_each_dji_stream_once(tmp_path: Path, monkeypatch):
+def test_alignment_tab_row_selection_no_longer_invokes_preview_builder_directly(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.alignment_preview as alignment_preview_module
     import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
 
     monkeypatch.chdir(tmp_path)
-    manifest = _make_manifest(tmp_path)
+    manifest_one = _make_manifest(tmp_path, row_index=3, case_id="case_A_0001")
+    manifest_two = _make_manifest(tmp_path, row_index=4, case_id="case_A_0002")
     candidates = _make_candidates(tmp_path / "rk-source", "31", "32")
     state = build_alignment_batch_state(
-        manifests=[manifest],
-        rk_raw_by_row={manifest.row_index: ""},
+        manifests=[manifest_one, manifest_two],
+        rk_raw_by_row={manifest_one.row_index: "", manifest_two.row_index: ""},
         candidates=candidates,
         bad_directory_logs=[],
     )
+    _install_preview_worker_stub(monkeypatch, alignment_tab_module)
     preview_calls = []
 
-    def _count_preview_calls(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        preview_calls.append(output_dir.name)
-        frame_path = output_dir / "frame_000.jpg"
-        frame_path.write_bytes(b"frame")
-        return [frame_path]
+    def _record_preview_calls(*args, **kwargs):
+        preview_calls.append((args, kwargs))
+        return []
 
-    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _count_preview_calls)
+    monkeypatch.setattr(alignment_preview_module, "build_dji_preview_frames", _record_preview_calls)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
-    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
-
-    assert preview_calls == ["normal", "night"]
-
-
-def test_alignment_tab_preview_cache_key_differs_for_reused_case_id(tmp_path: Path, monkeypatch):
-    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
-
-    monkeypatch.chdir(tmp_path)
-    preview_dirs = []
-
-    def _record_preview_dirs(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        preview_dirs.append(output_dir)
-        frame_path = output_dir / "frame_000.jpg"
-        pixmap = QPixmap(24, 24)
-        pixmap.fill()
-        pixmap.save(str(frame_path), "JPG")
-        return [frame_path]
-
-    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _record_preview_dirs)
-
-    manifest_one = _make_manifest(tmp_path, case_id="case_A_0001", video_stem="batch_one")
-    manifest_two = _make_manifest(tmp_path, case_id="case_A_0001", video_stem="batch_two")
-    candidates = _make_candidates(tmp_path / "rk-source", "31")
-
-    state_one = build_alignment_batch_state(
-        manifests=[manifest_one],
-        rk_raw_by_row={manifest_one.row_index: ""},
-        candidates=candidates,
-        bad_directory_logs=[],
+    tab.load_batch(
+        [manifest_one, manifest_two],
+        tmp_path / "source.xlsx",
+        tmp_path / "writeback.xlsx",
+        state,
     )
-    state_two = build_alignment_batch_state(
-        manifests=[manifest_two],
-        rk_raw_by_row={manifest_two.row_index: ""},
-        candidates=candidates,
-        bad_directory_logs=[],
-    )
+    tab._queue_list.setCurrentRow(1)
+    tab._queue_list.setCurrentRow(0)
 
-    tab = alignment_tab_module.AlignmentTab(_CONFIG)
-    tab.load_batch([manifest_one], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_one)
-    tab.load_batch([manifest_two], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_two)
-
-    first_normal_dir = preview_dirs[0]
-    second_normal_dir = preview_dirs[2]
-    assert first_normal_dir != second_normal_dir
-    assert first_normal_dir.parent != second_normal_dir.parent
+    assert preview_calls == []
 
 
 def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: Path, monkeypatch):
@@ -368,11 +448,7 @@ def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: 
         candidates=candidates,
         bad_directory_logs=[],
     )
-
-    def _raise_preview_error(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
-        raise RuntimeError("ffmpeg failed")
-
-    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _raise_preview_error)
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
     write_calls = []
 
     def _write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
@@ -382,6 +458,7 @@ def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: 
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+    worker_cls.created[0].preview_result.emit(_failed_payload(manifest))
     tab._confirm_btn.click()
 
     assert tab._normal_preview_list.count() == 0
@@ -405,14 +482,11 @@ def test_alignment_tab_preview_failure_logs_full_video_paths_and_existence(tmp_p
         candidates=candidates,
         bad_directory_logs=[],
     )
-
-    def _raise_preview_error(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
-        raise RuntimeError("ffmpeg failed")
-
-    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _raise_preview_error)
+    worker_cls = _install_preview_worker_stub(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+    worker_cls.created[0].preview_result.emit(_failed_payload(manifest))
 
     log_text = tab._log_panel.toPlainText()
     assert str(manifest.vs_normal_path) in log_text

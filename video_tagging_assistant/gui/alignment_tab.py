@@ -1,5 +1,4 @@
 from copy import deepcopy
-import hashlib
 from pathlib import Path
 
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
@@ -15,8 +14,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.alignment_preview import build_dji_preview_frames
 from video_tagging_assistant.excel_workbook import clear_rk_raw_value, write_rk_raw_value
+from video_tagging_assistant.gui.alignment_preview_worker import AlignmentPreviewWorker
 from video_tagging_assistant.rk_alignment_service import (
     clear_alignment,
     confirm_alignment,
@@ -37,7 +36,9 @@ class AlignmentTab(QWidget):
         self._displayed_cases = []
         self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
-        self._preview_ready_by_row = {}
+        self._preview_results_by_row = {}
+        self._preview_worker = None
+        self._preview_generation = 0
         self._runtime_logs = []
         self._setup_ui()
 
@@ -99,21 +100,29 @@ class AlignmentTab(QWidget):
         self._clear_btn.clicked.connect(self._clear_current_case)
 
     def load_batch(self, manifests, workbook_path: Path, writeback_workbook_path: Path, initial_state) -> None:
+        self._stop_preview_worker()
         self._manifests = list(manifests)
         self._source_workbook_path = Path(workbook_path)
         self._writeback_workbook_path = Path(writeback_workbook_path)
         self._state = initial_state
         self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
-        self._preview_ready_by_row = {}
+        self._preview_results_by_row = {
+            manifest.row_index: {"status": "pending"}
+            for manifest in self._manifests
+        }
         self._runtime_logs = []
         self._render()
+        self._start_preview_worker()
 
     def load_rewrite_rows(self, row_indices) -> None:
         if self._state is not None:
             self._state = enable_rewrite_rows(self._state, list(row_indices))
         self._rewrite_mode_row_indices = list(row_indices)
         self._render()
+
+    def shutdown(self) -> None:
+        self._stop_preview_worker()
 
     def is_complete(self) -> bool:
         return self._state is not None and not self._state.pending_cases and not self.is_blocked()
@@ -193,65 +202,26 @@ class AlignmentTab(QWidget):
             return
 
         case = self._displayed_cases[index]
-        preview_ready = self._populate_dji_previews(case)
+        preview_ready = self._render_preview_state(case)
         self._refresh_candidate_widgets(case, update_rk_preview=preview_ready)
 
-    def _populate_dji_previews(self, case) -> bool:
-        cache_root = self._preview_cache_root(case.manifest)
-        ffprobe_exe = self._config.get("ffprobe_exe", "ffprobe")
-        ffmpeg_exe = self._config.get("ffmpeg_exe", "ffmpeg")
-        normal_path = Path(case.manifest.vs_normal_path)
-        night_path = Path(case.manifest.vs_night_path)
-        try:
-            normal_frames = build_dji_preview_frames(
-                normal_path,
-                cache_root / "normal",
-                ffprobe_exe,
-                ffmpeg_exe,
-            )
-            night_frames = build_dji_preview_frames(
-                night_path,
-                cache_root / "night",
-                ffprobe_exe,
-                ffmpeg_exe,
-            )
-        except Exception as exc:
-            self._preview_ready_by_row[case.manifest.row_index] = False
-            self._normal_preview_list.clear()
-            self._night_preview_list.clear()
-            self._rk_preview_label.clear()
+    def _render_preview_state(self, case) -> bool:
+        preview_result = self._preview_results_by_row.get(case.manifest.row_index, {"status": "pending"})
+        status = preview_result.get("status", "pending")
+
+        if status == "prepared":
+            self._populate_preview_list(self._normal_preview_list, preview_result.get("normal_frames", []))
+            self._populate_preview_list(self._night_preview_list, preview_result.get("night_frames", []))
+            return True
+
+        self._normal_preview_list.clear()
+        self._night_preview_list.clear()
+        self._rk_preview_label.clear()
+        if status == "failed":
             self._rk_preview_label.setText("\u9884\u89c8\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5 DJI \u89c6\u9891")
-            self._append_log(
-                f"{case.manifest.case_id} DJI normal preview source: {normal_path} (exists={normal_path.exists()})"
-            )
-            self._append_log(
-                f"{case.manifest.case_id} DJI night preview source: {night_path} (exists={night_path.exists()})"
-            )
-            self._append_log(
-                f"{case.manifest.case_id} preview generation failed with ffprobe={ffprobe_exe} ffmpeg={ffmpeg_exe}: {exc}"
-            )
-            self._render_logs()
-            return False
-
-        self._preview_ready_by_row[case.manifest.row_index] = True
-        self._populate_preview_list(self._normal_preview_list, normal_frames)
-        self._populate_preview_list(self._night_preview_list, night_frames)
-        return True
-
-    def _preview_cache_root(self, manifest) -> Path:
-        cache_key = self._preview_cache_key(manifest)
-        return Path("artifacts") / "alignment_previews" / cache_key
-
-    def _preview_cache_key(self, manifest) -> str:
-        identity = "|".join(
-            [
-                str(manifest.case_id),
-                str(manifest.vs_normal_path),
-                str(manifest.vs_night_path),
-            ]
-        )
-        digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
-        return f"{manifest.case_id}_{digest}"
+        else:
+            self._rk_preview_label.setText("\u9884\u89c8\u51c6\u5907\u4e2d\uff0c\u8bf7\u7a0d\u5019")
+        return False
 
     def _populate_preview_list(self, widget: QListWidget, frames) -> None:
         widget.clear()
@@ -291,7 +261,7 @@ class AlignmentTab(QWidget):
     def _sync_buttons(self, case, candidate) -> None:
         has_case = case is not None
         has_candidate = candidate is not None
-        preview_ready = has_case and self._preview_ready_by_row.get(case.manifest.row_index, False)
+        preview_ready = has_case and self._preview_results_by_row.get(case.manifest.row_index, {}).get("status") == "prepared"
         self._prev_btn.setEnabled(has_case and has_candidate and self._current_candidate_index(case) > 0)
         self._next_btn.setEnabled(
             has_case
@@ -347,7 +317,7 @@ class AlignmentTab(QWidget):
             self._append_log(f"{case.manifest.case_id} has no RK candidate to confirm")
             self._render_logs()
             return
-        if not self._preview_ready_by_row.get(case.manifest.row_index, False):
+        if self._preview_results_by_row.get(case.manifest.row_index, {}).get("status") != "prepared":
             return
 
         try:
@@ -410,3 +380,63 @@ class AlignmentTab(QWidget):
 
     def _normalize_log_text(self, message: str) -> str:
         return message.replace("missing a preview", "missing preview")
+
+    def _start_preview_worker(self) -> None:
+        if self._state is None or not self._state.manifests:
+            return
+        self._preview_generation += 1
+        generation = self._preview_generation
+        worker = AlignmentPreviewWorker(self._config, list(self._state.manifests), self)
+        worker.preview_result.connect(lambda payload, current=generation: self._on_preview_result(current, payload))
+        worker.log_message.connect(lambda message, current=generation: self._on_preview_log(current, message))
+        worker.finished.connect(lambda current=generation, ref=worker: self._on_preview_worker_finished(current, ref))
+        self._preview_worker = worker
+        worker.start()
+
+    def _stop_preview_worker(self) -> None:
+        worker = self._preview_worker
+        if worker is None:
+            return
+        self._preview_generation += 1
+        self._preview_worker = None
+        worker.stop()
+        worker.wait(2000)
+
+    def _on_preview_result(self, generation: int, payload: dict) -> None:
+        if generation != self._preview_generation:
+            return
+        row_index = payload.get("row_index")
+        if row_index is None:
+            return
+        self._preview_results_by_row[row_index] = dict(payload)
+        if payload.get("status") == "failed":
+            self._append_preview_failure_logs(payload)
+        current_case = self._current_case()
+        if current_case is not None and current_case.manifest.row_index == row_index:
+            self._show_case_by_index(self._queue_list.currentRow())
+
+    def _on_preview_log(self, generation: int, message: str) -> None:
+        if generation != self._preview_generation:
+            return
+        self._append_log(message)
+        self._render_logs()
+
+    def _on_preview_worker_finished(self, generation: int, worker) -> None:
+        if generation != self._preview_generation:
+            return
+        if self._preview_worker is worker:
+            self._preview_worker = None
+
+    def _append_preview_failure_logs(self, payload: dict) -> None:
+        case_id = payload.get("case_id", "")
+        normal_source = Path(payload.get("normal_source"))
+        night_source = Path(payload.get("night_source"))
+        normal_exists = payload.get("normal_exists", normal_source.exists())
+        night_exists = payload.get("night_exists", night_source.exists())
+        self._append_log(f"{case_id} DJI normal preview source: {normal_source} (exists={normal_exists})")
+        self._append_log(f"{case_id} DJI night preview source: {night_source} (exists={night_exists})")
+        self._append_log(
+            f"{case_id} preview generation failed with ffprobe={self._config.get('ffprobe_exe', 'ffprobe')} "
+            f"ffmpeg={self._config.get('ffmpeg_exe', 'ffmpeg')}: {payload.get('error', '')}"
+        )
+        self._render_logs()
