@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
 
     def _write_review_outputs(self, manifest, tag_result) -> Path:
         """将审核通过后的 xlsx/txt 产物写入本地 case 目录。"""
-        if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
+        if self._workbook_path.exists():
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
             except Exception as exc:
@@ -215,10 +215,7 @@ class MainWindow(QMainWindow):
 
     def _on_tagging_complete(self, results: list) -> None:
         """打标完成：逐个注册 case 结果，与对齐状态交叉检查。"""
-        if self._tagging_tab._xlsx_writeback_path:
-            self._workbook_path = self._tagging_tab._xlsx_writeback_path
-        else:
-            self._workbook_path = Path(self._tagging_tab._workbook_edit.text().strip())
+        self._workbook_path = self._tagging_tab._writeback_path or Path(self._tagging_tab._workbook_edit.text().strip())
 
         self._auto_execution_enabled = self._tagging_tab.auto_execution_enabled()
         selected_device_info = self._tagging_tab.selected_device_info()
