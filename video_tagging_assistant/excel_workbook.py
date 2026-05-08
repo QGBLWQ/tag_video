@@ -101,6 +101,50 @@ def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListR
     return rows
 
 
+def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
+    workbook = load_workbook(workbook_path, data_only=True)
+    sheet = workbook[source_sheet]
+    headers = _header_map_for_row(sheet, 2)
+    if "RK_raw" not in headers:
+        raise ValueError("获取列表 缺少 RK_raw 表头")
+
+    values: Dict[int, str] = {}
+    rk_col = headers["RK_raw"]
+    normal_col = headers.get("Action5Pro_Nomal")
+    night_col = headers.get("Action5Pro_Night")
+
+    for row_index in range(3, sheet.max_row + 1):
+        normal = str(sheet.cell(row_index, normal_col).value or "").strip() if normal_col else ""
+        night = str(sheet.cell(row_index, night_col).value or "").strip() if night_col else ""
+        if not normal and not night:
+            continue
+        values[row_index] = str(sheet.cell(row_index, rk_col).value or "").strip()
+    return values
+
+
+def load_aligned_rk_raw_rows(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
+    return {
+        row_index: rk_raw
+        for row_index, rk_raw in load_rk_raw_values(workbook_path, source_sheet).items()
+        if rk_raw
+    }
+
+
+def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
+    _reject_xlsm_write(workbook_path)
+    workbook = load_workbook(workbook_path)
+    sheet = workbook[source_sheet]
+    headers = _header_map_for_row(sheet, 2)
+    if "RK_raw" not in headers:
+        raise ValueError("获取列表 缺少 RK_raw 表头")
+    sheet.cell(row_index, headers["RK_raw"]).value = rk_raw_value
+    workbook.save(workbook_path)
+
+
+def clear_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int) -> None:
+    write_rk_raw_value(workbook_path, source_sheet, row_index, "")
+
+
 def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_list_row: GetListRow) -> ExcelCaseRecord:
     matches = [
         row
