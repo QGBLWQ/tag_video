@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 from pathlib import Path
 
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
@@ -196,7 +197,7 @@ class AlignmentTab(QWidget):
         self._refresh_candidate_widgets(case, update_rk_preview=preview_ready)
 
     def _populate_dji_previews(self, case) -> bool:
-        cache_root = Path("artifacts") / "alignment_previews" / case.manifest.case_id
+        cache_root = self._preview_cache_root(case.manifest)
         ffprobe_exe = self._config.get("ffprobe_exe", "ffprobe")
         ffmpeg_exe = self._config.get("ffmpeg_exe", "ffmpeg")
         try:
@@ -226,6 +227,21 @@ class AlignmentTab(QWidget):
         self._populate_preview_list(self._normal_preview_list, normal_frames)
         self._populate_preview_list(self._night_preview_list, night_frames)
         return True
+
+    def _preview_cache_root(self, manifest) -> Path:
+        cache_key = self._preview_cache_key(manifest)
+        return Path("artifacts") / "alignment_previews" / cache_key
+
+    def _preview_cache_key(self, manifest) -> str:
+        identity = "|".join(
+            [
+                str(manifest.case_id),
+                str(manifest.vs_normal_path),
+                str(manifest.vs_night_path),
+            ]
+        )
+        digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]
+        return f"{manifest.case_id}_{digest}"
 
     def _populate_preview_list(self, widget: QListWidget, frames) -> None:
         widget.clear()

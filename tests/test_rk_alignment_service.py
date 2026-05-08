@@ -123,6 +123,22 @@ def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_p
     assert bad_logs == []
 
 
+def test_scan_rk_candidates_does_not_scan_cwd_when_dut_root_is_blank(tmp_path: Path, monkeypatch):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    _mkdir_candidate(cwd, "77")
+
+    temp_root = tmp_path / "temp_root"
+    temp_root.mkdir()
+
+    source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), "")
+
+    assert source_root == temp_root
+    assert candidates == []
+    assert bad_logs == []
+
+
 def test_build_alignment_batch_state_uses_historical_prefix_and_marks_pending_rows(tmp_path: Path):
     manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
     candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33", "34")]

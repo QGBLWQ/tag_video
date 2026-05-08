@@ -41,16 +41,18 @@ class AlignmentBatchState:
     base_raw_paths: Dict[int, Path] = field(default_factory=dict)
 
 
-def scan_rk_candidates(temp_root: str, dut_root: str) -> Tuple[Path, list[RkCandidate], list[str]]:
+def scan_rk_candidates(temp_root: str, dut_root: str) -> Tuple[Path | None, list[RkCandidate], list[str]]:
     temp_path = _optional_root_path(temp_root)
-    dut_path = _optional_root_path(dut_root) or Path(dut_root)
+    dut_path = _optional_root_path(dut_root)
 
     temp_candidates, temp_logs = _scan_candidate_root(temp_path)
     if temp_candidates:
         return temp_path, temp_candidates, temp_logs
 
     dut_candidates, dut_logs = _scan_candidate_root(dut_path)
-    return dut_path, dut_candidates, temp_logs + dut_logs
+    if dut_path is not None:
+        return dut_path, dut_candidates, temp_logs + dut_logs
+    return temp_path, temp_candidates, temp_logs
 
 
 def build_alignment_batch_state(

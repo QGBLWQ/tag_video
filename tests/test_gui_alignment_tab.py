@@ -19,15 +19,21 @@ _CONFIG = {
 }
 
 
-def _make_manifest(tmp_path: Path, row_index: int = 3, case_id: str = "case_A_0001") -> CaseManifest:
+def _make_manifest(
+    tmp_path: Path,
+    row_index: int = 3,
+    case_id: str = "case_A_0001",
+    video_stem: str = "",
+) -> CaseManifest:
+    video_name_prefix = video_stem or case_id
     return CaseManifest(
         case_id=case_id,
         row_index=row_index,
         created_date="20260508",
         mode="OV50H40_Action5Pro_DCG HDR",
         raw_path=Path(""),
-        vs_normal_path=tmp_path / f"{case_id}_normal.mp4",
-        vs_night_path=tmp_path / f"{case_id}_night.mp4",
+        vs_normal_path=tmp_path / f"{video_name_prefix}_normal.mp4",
+        vs_night_path=tmp_path / f"{video_name_prefix}_night.mp4",
         local_case_root=tmp_path / "local" / case_id,
         server_case_dir=tmp_path / "server" / case_id,
         remark="",
@@ -304,6 +310,50 @@ def test_alignment_tab_initial_render_builds_each_dji_stream_once(tmp_path: Path
     tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
 
     assert preview_calls == ["normal", "night"]
+
+
+def test_alignment_tab_preview_cache_key_differs_for_reused_case_id(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    preview_dirs = []
+
+    def _record_preview_dirs(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        preview_dirs.append(output_dir)
+        frame_path = output_dir / "frame_000.jpg"
+        pixmap = QPixmap(24, 24)
+        pixmap.fill()
+        pixmap.save(str(frame_path), "JPG")
+        return [frame_path]
+
+    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _record_preview_dirs)
+
+    manifest_one = _make_manifest(tmp_path, case_id="case_A_0001", video_stem="batch_one")
+    manifest_two = _make_manifest(tmp_path, case_id="case_A_0001", video_stem="batch_two")
+    candidates = _make_candidates(tmp_path / "rk-source", "31")
+
+    state_one = build_alignment_batch_state(
+        manifests=[manifest_one],
+        rk_raw_by_row={manifest_one.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    state_two = build_alignment_batch_state(
+        manifests=[manifest_two],
+        rk_raw_by_row={manifest_two.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest_one], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_one)
+    tab.load_batch([manifest_two], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_two)
+
+    first_normal_dir = preview_dirs[0]
+    second_normal_dir = preview_dirs[2]
+    assert first_normal_dir != second_normal_dir
+    assert first_normal_dir.parent != second_normal_dir.parent
 
 
 def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: Path, monkeypatch):
