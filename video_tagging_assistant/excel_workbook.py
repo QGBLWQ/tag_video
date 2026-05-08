@@ -63,12 +63,6 @@ class GetListRow:
     vs_night_name: str
 
 
-def _reject_xlsm_write(workbook_path: Path) -> None:
-    """拒绝直接写回 xlsm，避免破坏原始宏工作簿。"""
-    if Path(workbook_path).suffix.lower() == ".xlsm":
-        raise ValueError(f"{workbook_path} 是 .xlsm 工作簿，当前仅支持只读访问，禁止原地写回以避免损坏台账")
-
-
 def _header_map(sheet) -> Dict[str, int]:
     """读取第 1 行表头，并返回“表头名 -> 列号”映射。"""
     return {str(cell.value).strip(): idx + 1 for idx, cell in enumerate(sheet[1]) if cell.value is not None}
@@ -151,8 +145,7 @@ def load_aligned_rk_raw_rows(workbook_path: Path, source_sheet: str) -> Dict[int
 
 def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
     """把单行对齐结果写回「获取列表」的 RK_raw 列。"""
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
     if "RK_raw" not in headers:
@@ -164,6 +157,17 @@ def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, r
 def clear_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int) -> None:
     """清空指定行的 RK_raw 值。"""
     write_rk_raw_value(workbook_path, source_sheet, row_index, "")
+
+
+def mark_row_processed(workbook_path: Path, source_sheet: str, row_index: int) -> None:
+    """将「获取列表」指定行的 处理状态 标记为 R（已处理）。"""
+    workbook = load_workbook(workbook_path, keep_vba=True)
+    sheet = workbook[source_sheet]
+    headers = _header_map_for_row(sheet, 2)
+    if "处理状态" not in headers:
+        raise ValueError("获取列表 缺少 处理状态 表头")
+    sheet.cell(row_index, headers["处理状态"]).value = "R"
+    workbook.save(workbook_path)
 
 
 def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_list_row: GetListRow) -> ExcelCaseRecord:
@@ -191,8 +195,7 @@ def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_lis
 
 def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
     """确保流水线运行状态列存在，不存在时自动追加。"""
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
     next_column = sheet.max_column + 1
@@ -266,8 +269,7 @@ def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses
 
 def update_pipeline_status(workbook_path: Path, source_sheet: str, case_id: str, status_updates: Dict[str, str]) -> None:
     """按 case_id 更新流水线运行状态列。"""
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
     for row_index in range(2, sheet.max_row + 1):
@@ -436,8 +438,7 @@ def load_confirmed_cases(
 
 def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[ReviewSheetRow]) -> None:
     """向审核结果 sheet 批量写入或更新审核行。"""
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     if review_sheet in workbook.sheetnames:
         sheet = workbook[review_sheet]
     else:
@@ -501,8 +502,7 @@ def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Di
 
 def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str) -> None:
     """把审核结果中的通过项同步回源 sheet 的最终结果列。"""
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     source = workbook[source_sheet]
     review = workbook[review_sheet]
     source_headers = _header_map(source)
@@ -591,8 +591,7 @@ def upsert_create_record_row(
 
     workbook_path 必须是 .xlsx。
     """
-    _reject_xlsm_write(workbook_path)
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
 
     if "创建记录" not in workbook.sheetnames:
         sheet = workbook.create_sheet("创建记录")

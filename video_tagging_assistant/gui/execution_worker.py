@@ -6,6 +6,7 @@
 
 import queue
 import threading
+from pathlib import Path
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QApplication
@@ -96,6 +97,14 @@ class ExecutionWorker(QThread):
                 upload_case(manifest, self._config, progress_cb=_cb)
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "completed", "")
+                    # 标记处理状态为 R
+                    try:
+                        from video_tagging_assistant.excel_workbook import mark_row_processed
+                        workbook_path = Path(self._config.get("workbook_path", ""))
+                        if workbook_path.exists():
+                            mark_row_processed(workbook_path, "获取列表", manifest.row_index)
+                    except Exception:
+                        pass  # 标记失败不影响主流程
             except Exception as exc:
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "failed", str(exc))
