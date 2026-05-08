@@ -1,12 +1,13 @@
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -35,6 +36,7 @@ class AlignmentTab(QWidget):
         self._displayed_cases = []
         self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
+        self._preview_ready_by_row = {}
         self._runtime_logs = []
         self._setup_ui()
 
@@ -71,9 +73,11 @@ class AlignmentTab(QWidget):
 
         right.addWidget(QLabel("DJI Normal"))
         self._normal_preview_list = QListWidget()
+        self._normal_preview_list.setIconSize(QSize(120, 90))
         right.addWidget(self._normal_preview_list, stretch=1)
         right.addWidget(QLabel("DJI Night"))
         self._night_preview_list = QListWidget()
+        self._night_preview_list.setIconSize(QSize(120, 90))
         right.addWidget(self._night_preview_list, stretch=1)
 
         action_row = QHBoxLayout()
@@ -100,6 +104,7 @@ class AlignmentTab(QWidget):
         self._state = initial_state
         self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
+        self._preview_ready_by_row = {}
         self._runtime_logs = []
         self._render()
 
@@ -142,6 +147,7 @@ class AlignmentTab(QWidget):
         self._displayed_cases = self._display_cases()
         self._queue_list.blockSignals(True)
         self._queue_list.clear()
+        self._queue_list.setCurrentRow(-1)
         for case in self._displayed_cases:
             self._queue_list.addItem(
                 "row {row} | {case_id} | {status} | {normal}".format(
@@ -207,6 +213,7 @@ class AlignmentTab(QWidget):
                 ffmpeg_exe,
             )
         except Exception as exc:
+            self._preview_ready_by_row[case.manifest.row_index] = False
             self._normal_preview_list.clear()
             self._night_preview_list.clear()
             self._rk_preview_label.clear()
@@ -215,6 +222,7 @@ class AlignmentTab(QWidget):
             self._render_logs()
             return False
 
+        self._preview_ready_by_row[case.manifest.row_index] = True
         self._populate_preview_list(self._normal_preview_list, normal_frames)
         self._populate_preview_list(self._night_preview_list, night_frames)
         return True
@@ -222,7 +230,13 @@ class AlignmentTab(QWidget):
     def _populate_preview_list(self, widget: QListWidget, frames) -> None:
         widget.clear()
         for frame in frames:
-            widget.addItem(Path(frame).name)
+            frame_path = Path(frame)
+            item = QListWidgetItem()
+            item.setText(frame_path.name)
+            icon = QIcon(str(frame_path))
+            if not icon.isNull():
+                item.setIcon(icon)
+            widget.addItem(item)
 
     def _refresh_candidate_widgets(self, case, update_rk_preview: bool = True) -> None:
         candidate_index = self._current_candidate_index(case)
@@ -251,13 +265,14 @@ class AlignmentTab(QWidget):
     def _sync_buttons(self, case, candidate) -> None:
         has_case = case is not None
         has_candidate = candidate is not None
+        preview_ready = has_case and self._preview_ready_by_row.get(case.manifest.row_index, False)
         self._prev_btn.setEnabled(has_case and has_candidate and self._current_candidate_index(case) > 0)
         self._next_btn.setEnabled(
             has_case
             and has_candidate
             and self._current_candidate_index(case) < len(self._state.candidates) - 1
         )
-        self._confirm_btn.setEnabled(has_case and has_candidate)
+        self._confirm_btn.setEnabled(has_case and has_candidate and preview_ready)
         self._clear_btn.setEnabled(has_case)
 
     def _current_case(self):
@@ -305,6 +320,8 @@ class AlignmentTab(QWidget):
         if candidate is None:
             self._append_log(f"{case.manifest.case_id} has no RK candidate to confirm")
             self._render_logs()
+            return
+        if not self._preview_ready_by_row.get(case.manifest.row_index, False):
             return
 
         try:

@@ -1,4 +1,3 @@
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List
@@ -39,8 +38,14 @@ def build_dji_preview_frames(
     ffmpeg_exe: str,
     frame_count: int = 30,
 ) -> List[Path]:
+    cached_frames = sorted(output_dir.glob("frame_*.jpg"))
+    if len(cached_frames) >= frame_count:
+        return cached_frames[:frame_count]
+
     if output_dir.exists():
-        shutil.rmtree(output_dir)
+        for child in output_dir.iterdir():
+            if child.is_file():
+                child.unlink()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     duration = _video_duration_seconds(video_path, ffprobe_exe)

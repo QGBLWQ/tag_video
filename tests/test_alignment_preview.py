@@ -63,3 +63,30 @@ def test_build_dji_preview_frames_uses_ffprobe_then_ffmpeg(tmp_path: Path, monke
             ffmpeg_exe="ffmpeg",
             frame_count=24,
         )
+
+
+def test_build_dji_preview_frames_reuses_cached_frames_without_regeneration(tmp_path: Path, monkeypatch):
+    video_path = tmp_path / "clip.mp4"
+    output_dir = tmp_path / "preview_frames"
+    video_path.write_bytes(b"video")
+    output_dir.mkdir()
+    cached_names = []
+    for index in range(3):
+        frame_name = "frame_{:03d}.jpg".format(index)
+        (output_dir / frame_name).write_bytes(b"jpeg")
+        cached_names.append(frame_name)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called when cache is complete")
+
+    monkeypatch.setattr("video_tagging_assistant.alignment_preview.subprocess.run", fail_if_called)
+
+    frames = build_dji_preview_frames(
+        video_path=video_path,
+        output_dir=output_dir,
+        ffprobe_exe="ffprobe",
+        ffmpeg_exe="ffmpeg",
+        frame_count=3,
+    )
+
+    assert [frame.name for frame in frames] == cached_names
