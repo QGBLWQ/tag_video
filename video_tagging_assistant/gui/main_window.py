@@ -16,13 +16,20 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from video_tagging_assistant.excel_workbook import load_dut_info, upsert_create_record_row, write_case_txt
+from video_tagging_assistant.excel_workbook import (
+    load_dut_info,
+    load_rk_raw_values,
+    upsert_create_record_row,
+    write_case_txt,
+)
+from video_tagging_assistant.gui.alignment_tab import AlignmentTab
 from video_tagging_assistant.gui.execution_tab import ExecutionTab
 from video_tagging_assistant.gui.execution_worker import ExecutionWorker
 from video_tagging_assistant.gui.review_panel import ReviewPanel
 from video_tagging_assistant.gui.review_tab import ReviewTab
 from video_tagging_assistant.gui.table_models import CaseTableModel
 from video_tagging_assistant.gui.tagging_tab import TaggingTab
+from video_tagging_assistant.rk_alignment_service import build_alignment_batch_state, scan_rk_candidates
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +40,15 @@ class MainWindow(QMainWindow):
         self._workbook_path = Path(config.get("workbook_path", ""))
         self._auto_execution_enabled = False
         self._locked_device_info = None
+        self._tagging_finished = False
+        self._alignment_ready = False
+        self._alignment_blocked = False
+        self._alignment_confirmed = 0
+        self._alignment_total = 0
+        self._loaded_manifests = []
+        self._pending_tagging_results = []
+        self._review_loaded = False
+        self._execution_prequeued = False
 
         self.setWindowTitle("Video Tagging Pipeline")
 
@@ -40,19 +56,24 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
         self._tagging_tab = TaggingTab(config)
+        self._alignment_tab = AlignmentTab(config)
         self._review_tab = ReviewTab(config, tag_options)
         self._execution_tab = ExecutionTab(self._worker)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._tagging_tab, "打标")
+        self._tabs.addTab(self._alignment_tab, "瀵归綈")
         self._tabs.addTab(self._review_tab, "审核")
         self._tabs.addTab(self._execution_tab, "执行队列")
         self._tabs.setTabEnabled(1, False)
         self._tabs.setTabEnabled(2, False)
+        self._tabs.setTabEnabled(3, False)
 
         self.setCentralWidget(self._tabs)
 
+        self._tagging_tab.batch_loaded.connect(self._on_batch_loaded)
         self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
+        self._alignment_tab.alignment_state_changed.connect(self._on_alignment_state_changed)
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
         self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
@@ -105,6 +126,60 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             raise RuntimeError(f"txt 上传失败: {exc}") from exc
 
+    def _on_batch_loaded(self, payload: dict) -> None:
+        self._loaded_manifests = list(payload.get("manifests", []))
+        self._workbook_path = Path(payload["writeback_workbook"])
+        self._tagging_finished = False
+        self._alignment_ready = False
+        self._alignment_blocked = False
+        self._alignment_confirmed = 0
+        self._alignment_total = 0
+        self._pending_tagging_results = []
+        self._review_loaded = False
+        self._execution_prequeued = False
+
+        try:
+            rk_raw_by_row = load_rk_raw_values(self._workbook_path, source_sheet="鑾峰彇鍒楄〃")
+            _, candidates, bad_logs = scan_rk_candidates(
+                temp_root=str(self._config.get("temp_path", "")),
+                dut_root=str(self._config.get("dut_root", "")),
+            )
+            initial_state = build_alignment_batch_state(
+                manifests=self._loaded_manifests,
+                rk_raw_by_row=rk_raw_by_row,
+                candidates=candidates,
+                bad_directory_logs=bad_logs,
+            )
+        except Exception as exc:
+            initial_state = build_alignment_batch_state(
+                manifests=self._loaded_manifests,
+                rk_raw_by_row={},
+                candidates=[],
+                bad_directory_logs=[f"alignment init failed: {exc}"],
+            )
+
+        self._tabs.setTabEnabled(1, True)
+        self._tabs.setTabEnabled(2, False)
+        self._tabs.setTabEnabled(3, False)
+        self._alignment_tab.load_batch(
+            manifests=self._loaded_manifests,
+            workbook_path=Path(payload["source_workbook"]),
+            writeback_workbook_path=self._workbook_path,
+            initial_state=initial_state,
+        )
+
+    def _on_alignment_state_changed(self, confirmed: int, total: int, blocked: bool) -> None:
+        self._alignment_confirmed = confirmed
+        self._alignment_total = total
+        self._alignment_blocked = blocked
+        self._alignment_ready = bool(self._loaded_manifests) and not blocked and confirmed == total
+
+        if not self._alignment_ready:
+            self._tabs.setTabEnabled(2, False)
+            self._review_loaded = False
+
+        self._maybe_enter_review()
+
     def _on_tagging_complete(self, results: list) -> None:
         if self._tagging_tab._xlsx_writeback_path:
             self._workbook_path = self._tagging_tab._xlsx_writeback_path
@@ -115,8 +190,21 @@ class MainWindow(QMainWindow):
         selected_device_info = self._tagging_tab.selected_device_info()
         self._locked_device_info = selected_device_info if isinstance(selected_device_info, dict) else None
 
-        manifests = [result["manifest"] for result in results]
-        tagging_results = {result["manifest"].case_id: result["ai_result"] for result in results}
+        self._pending_tagging_results = list(results)
+        self._tagging_finished = True
+        self._maybe_enter_review()
+
+    def _maybe_enter_review(self) -> None:
+        if self._review_loaded:
+            return
+        if not self._tagging_finished or not self._alignment_ready:
+            return
+
+        manifests = [result["manifest"] for result in self._pending_tagging_results]
+        tagging_results = {
+            result["manifest"].case_id: result["ai_result"]
+            for result in self._pending_tagging_results
+        }
         dut_devices = []
         try:
             dut_devices = load_dut_info(self._workbook_path)
@@ -127,8 +215,8 @@ class MainWindow(QMainWindow):
             for manifest in manifests:
                 self._apply_device_info_to_manifest(manifest, self._locked_device_info)
 
-        self._tabs.setTabEnabled(1, True)
-        self._tabs.setCurrentIndex(1)
+        self._tabs.setTabEnabled(2, True)
+        self._tabs.setCurrentIndex(2)
         self._review_tab.load_cases(
             manifests,
             tagging_results,
@@ -142,9 +230,13 @@ class MainWindow(QMainWindow):
             self._review_tab._device_combo.setEnabled(True)
 
         if self._auto_execution_enabled:
-            self._tabs.setTabEnabled(2, True)
-            for manifest in manifests:
-                self._execution_tab.add_case(manifest)
+            self._tabs.setTabEnabled(3, True)
+            if not self._execution_prequeued:
+                for manifest in manifests:
+                    self._execution_tab.add_case(manifest)
+                self._execution_prequeued = True
+
+        self._review_loaded = True
 
     def _on_case_approved(self, manifest, tag_result) -> None:
         if not self._auto_execution_enabled:
@@ -163,7 +255,7 @@ class MainWindow(QMainWindow):
         self._review_tab.advance_after_approval()
 
         if not self._auto_execution_enabled:
-            self._tabs.setTabEnabled(2, True)
+            self._tabs.setTabEnabled(3, True)
             self._execution_tab.add_case(manifest)
 
     def closeEvent(self, event) -> None:

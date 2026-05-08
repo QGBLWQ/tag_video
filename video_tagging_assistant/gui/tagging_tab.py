@@ -132,6 +132,7 @@ class TaggingTab(QWidget):
     """Tab1：工作簿选择 + 模式切换 + 打标进度。"""
 
     tagging_complete = pyqtSignal(list)
+    batch_loaded = pyqtSignal(object)
 
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
@@ -269,6 +270,13 @@ class TaggingTab(QWidget):
             self._device_combo.addItem(label, device)
         self._device_combo.setCurrentIndex(-1)
         self._sync_auto_mode_widgets()
+        self.batch_loaded.emit(
+            {
+                "manifests": list(self._manifests),
+                "source_workbook": wb_path,
+                "writeback_workbook": self._xlsx_writeback_path,
+            }
+        )
 
     def _sync_auto_mode_widgets(self) -> None:
         self._device_combo.setEnabled(

@@ -57,6 +57,16 @@ def test_tagging_tab_has_tagging_complete_signal():
     assert hasattr(tab, "tagging_complete")
 
 
+def test_tagging_tab_has_batch_loaded_signal():
+    from video_tagging_assistant.gui.tagging_tab import TaggingTab
+
+    tab = TaggingTab(_CONFIG)
+    received = []
+    tab.batch_loaded.connect(received.append)
+
+    assert hasattr(tab, "batch_loaded")
+
+
 def test_tagging_tab_load_cases_from_workbook(tmp_path: Path):
     """load_cases_from_workbook reads GetListRow and updates QListWidget."""
     import openpyxl
@@ -85,6 +95,50 @@ def test_tagging_tab_load_cases_from_workbook(tmp_path: Path):
 
     assert tab._case_list.count() == 1
     assert "DJI_0001.MP4" in tab._case_list.item(0).text()
+
+
+@pytest.mark.parametrize(
+    ("workbook_name", "expected_writeback_name"),
+    [
+        ("records.xlsx", "records.xlsx"),
+        ("records.xlsm", "records.xlsx"),
+    ],
+)
+def test_load_cases_from_workbook_emits_batch_loaded_payload_with_writeback_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workbook_name: str,
+    expected_writeback_name: str,
+):
+    import video_tagging_assistant.gui.tagging_tab as tagging_tab_module
+
+    manifests = [
+        SimpleNamespace(case_id="case_A_0001", vs_normal_path=Path("DJI_0001.MP4")),
+    ]
+    workbook_path = tmp_path / workbook_name
+    workbook_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(tagging_tab_module, "get_next_case_sequence", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(tagging_tab_module, "load_get_list_manifests", lambda **kwargs: manifests)
+    monkeypatch.setattr(tagging_tab_module, "load_dut_info", lambda path: [], raising=False)
+
+    tab = tagging_tab_module.TaggingTab(_CONFIG)
+    received = []
+    tab.batch_loaded.connect(received.append)
+    tab._workbook_edit.setText(str(workbook_path))
+
+    tab._load_cases_from_workbook()
+
+    expected_writeback_path = tmp_path / expected_writeback_name
+    assert len(received) == 1
+    assert received[0] == {
+        "manifests": manifests,
+        "source_workbook": workbook_path,
+        "writeback_workbook": expected_writeback_path,
+    }
+    assert tab._xlsx_writeback_path == expected_writeback_path
+    if workbook_path.suffix.lower() == ".xlsm":
+        assert expected_writeback_path.exists()
 
 
 def test_tagging_tab_exposes_auto_mode_controls():
