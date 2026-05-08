@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -14,7 +15,11 @@ from PyQt5.QtWidgets import (
 
 from video_tagging_assistant.alignment_preview import build_dji_preview_frames
 from video_tagging_assistant.excel_workbook import clear_rk_raw_value, write_rk_raw_value
-from video_tagging_assistant.rk_alignment_service import clear_alignment, confirm_alignment
+from video_tagging_assistant.rk_alignment_service import (
+    clear_alignment,
+    confirm_alignment,
+    enable_rewrite_rows,
+)
 
 
 class AlignmentTab(QWidget):
@@ -99,6 +104,8 @@ class AlignmentTab(QWidget):
         self._render()
 
     def load_rewrite_rows(self, row_indices) -> None:
+        if self._state is not None:
+            self._state = enable_rewrite_rows(self._state, list(row_indices))
         self._rewrite_mode_row_indices = list(row_indices)
         self._render()
 
@@ -149,7 +156,6 @@ class AlignmentTab(QWidget):
 
         if self._displayed_cases:
             self._queue_list.setCurrentRow(0)
-            self._show_case_by_index(0)
         else:
             self._normal_preview_list.clear()
             self._night_preview_list.clear()
@@ -302,6 +308,7 @@ class AlignmentTab(QWidget):
             return
 
         try:
+            confirm_alignment(deepcopy(self._state), case.manifest.row_index, candidate.folder_name)
             write_rk_raw_value(
                 self._writeback_workbook_path,
                 "\u83b7\u53d6\u5217\u8868",

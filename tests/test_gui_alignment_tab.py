@@ -7,7 +7,6 @@ from video_tagging_assistant.pipeline_models import CaseManifest
 from video_tagging_assistant.rk_alignment_service import (
     RkCandidate,
     build_alignment_batch_state,
-    enable_rewrite_rows,
     scan_rk_candidates,
 )
 
@@ -164,18 +163,42 @@ def test_alignment_tab_load_rewrite_rows_displays_selected_aligned_case(tmp_path
         candidates=candidates,
         bad_directory_logs=[],
     )
-    rewrite_state = enable_rewrite_rows(state, [manifest.row_index])
     _patch_preview_builder(monkeypatch, alignment_tab_module)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
-    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", rewrite_state)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
     tab.load_rewrite_rows([manifest.row_index])
 
+    assert manifest.row_index in tab._state.rewrite_row_indices
     assert tab._queue_list.count() == 1
     queue_text = tab._queue_list.item(0).text()
     assert manifest.case_id in queue_text
     assert f"row {manifest.row_index}" in queue_text
     assert "rewrite_aligned" in queue_text
+
+
+def test_alignment_tab_rewrite_button_updates_service_state(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest = _make_manifest(tmp_path)
+    candidates = _make_candidates(tmp_path / "rk-source", "31", "32")
+    state = build_alignment_batch_state(
+        manifests=[manifest],
+        rk_raw_by_row={manifest.row_index: "31"},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    _patch_preview_builder(monkeypatch, alignment_tab_module)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+
+    tab._rewrite_btn.click()
+
+    assert manifest.row_index in tab._state.rewrite_row_indices
+    assert tab._queue_list.count() == 1
+    assert "rewrite_aligned" in tab._queue_list.item(0).text()
 
 
 def test_alignment_tab_clear_reopens_case(tmp_path: Path, monkeypatch):
@@ -190,7 +213,6 @@ def test_alignment_tab_clear_reopens_case(tmp_path: Path, monkeypatch):
         candidates=candidates,
         bad_directory_logs=[],
     )
-    rewrite_state = enable_rewrite_rows(state, [manifest.row_index])
     _patch_preview_builder(monkeypatch, alignment_tab_module)
     clear_calls = []
 
@@ -200,14 +222,83 @@ def test_alignment_tab_clear_reopens_case(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(alignment_tab_module, "clear_rk_raw_value", _clear_rk_raw_value)
 
     tab = alignment_tab_module.AlignmentTab(_CONFIG)
-    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", rewrite_state)
-    tab.load_rewrite_rows([manifest.row_index])
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+    tab._rewrite_btn.click()
 
     tab._clear_btn.click()
 
     assert clear_calls == [manifest.row_index]
+    assert manifest.row_index in tab._state.rewrite_row_indices
     assert tab._queue_list.count() == 1
     assert "rewrite_pending" in tab._queue_list.item(0).text()
+
+
+def test_alignment_tab_invalid_confirm_does_not_write_workbook(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest_one = _make_manifest(tmp_path, row_index=3, case_id="case_A_0001")
+    manifest_two = _make_manifest(tmp_path, row_index=4, case_id="case_A_0002")
+    candidates = _make_candidates(tmp_path / "rk-source", "31", "32")
+    state = build_alignment_batch_state(
+        manifests=[manifest_one, manifest_two],
+        rk_raw_by_row={
+            manifest_one.row_index: "31",
+            manifest_two.row_index: "32",
+        },
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    _patch_preview_builder(monkeypatch, alignment_tab_module)
+    write_calls = []
+
+    def _write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
+        write_calls.append((row_index, rk_raw_value))
+
+    monkeypatch.setattr(alignment_tab_module, "write_rk_raw_value", _write_rk_raw_value)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch(
+        [manifest_one, manifest_two],
+        tmp_path / "source.xlsx",
+        tmp_path / "writeback.xlsx",
+        state,
+    )
+    tab.load_rewrite_rows([manifest_one.row_index])
+    tab._next_btn.click()
+    tab._confirm_btn.click()
+
+    assert write_calls == []
+    assert "confirm failed" in tab._log_panel.toPlainText()
+
+
+def test_alignment_tab_initial_render_builds_each_dji_stream_once(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    monkeypatch.chdir(tmp_path)
+    manifest = _make_manifest(tmp_path)
+    candidates = _make_candidates(tmp_path / "rk-source", "31", "32")
+    state = build_alignment_batch_state(
+        manifests=[manifest],
+        rk_raw_by_row={manifest.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    preview_calls = []
+
+    def _count_preview_calls(video_path: Path, output_dir: Path, ffprobe_exe: str, ffmpeg_exe: str, frame_count: int = 30):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        preview_calls.append(output_dir.name)
+        frame_path = output_dir / "frame_000.jpg"
+        frame_path.write_bytes(b"frame")
+        return [frame_path]
+
+    monkeypatch.setattr(alignment_tab_module, "build_dji_preview_frames", _count_preview_calls)
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state)
+
+    assert preview_calls == ["normal", "night"]
 
 
 def test_alignment_tab_preview_failure_logs_and_keeps_empty_dji_lists(tmp_path: Path, monkeypatch):
