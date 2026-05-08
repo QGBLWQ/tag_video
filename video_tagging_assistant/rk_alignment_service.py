@@ -42,15 +42,15 @@ class AlignmentBatchState:
 
 
 def scan_rk_candidates(temp_root: str, dut_root: str) -> Tuple[Path, list[RkCandidate], list[str]]:
-    temp_path = Path(temp_root)
-    dut_path = Path(dut_root)
+    temp_path = _optional_root_path(temp_root)
+    dut_path = _optional_root_path(dut_root) or Path(dut_root)
 
     temp_candidates, temp_logs = _scan_candidate_root(temp_path)
     if temp_candidates:
         return temp_path, temp_candidates, temp_logs
 
     dut_candidates, dut_logs = _scan_candidate_root(dut_path)
-    return dut_path, dut_candidates, dut_logs
+    return dut_path, dut_candidates, temp_logs + dut_logs
 
 
 def build_alignment_batch_state(
@@ -76,7 +76,8 @@ def build_alignment_batch_state(
 
 
 def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name: str) -> AlignmentBatchState:
-    candidate_index = _candidate_index_by_name(state.candidates).get(candidate_name)
+    candidate_indices = _candidate_index_by_name(state.candidates)
+    candidate_index = candidate_indices.get(candidate_name)
     if candidate_index is None:
         raise ValueError(f"RK candidate {candidate_name} does not exist")
     _manifest_by_row(state.manifests, row_index)
@@ -88,7 +89,7 @@ def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name
             later_value = _normalize_rk_raw(state.rk_raw_by_row.get(later_manifest.row_index, ""))
             if not later_value:
                 continue
-            later_candidate_index = _candidate_index_by_name(state.candidates).get(later_value)
+            later_candidate_index = candidate_indices.get(later_value)
             if later_candidate_index is not None and later_candidate_index <= candidate_index:
                 raise ValueError(
                     f"row {row_index} cannot be rewritten to RK {candidate_name} because later confirmed rows "
@@ -97,20 +98,6 @@ def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name
 
     updated_rk_raw = dict(state.rk_raw_by_row)
     updated_rk_raw[row_index] = candidate_name
-    return _recompute_state(
-        manifests=state.manifests,
-        base_raw_paths=state.base_raw_paths,
-        rk_raw_by_row=updated_rk_raw,
-        candidates=state.candidates,
-        bad_directory_logs=state.bad_directory_logs,
-        rewrite_row_indices=set(state.rewrite_row_indices),
-    )
-
-
-def clear_alignment(state: AlignmentBatchState, row_index: int) -> AlignmentBatchState:
-    _manifest_by_row(state.manifests, row_index)
-    updated_rk_raw = dict(state.rk_raw_by_row)
-    updated_rk_raw[row_index] = ""
     updated_rewrite_rows = set(state.rewrite_row_indices)
     updated_rewrite_rows.discard(row_index)
     return _recompute_state(
@@ -120,6 +107,20 @@ def clear_alignment(state: AlignmentBatchState, row_index: int) -> AlignmentBatc
         candidates=state.candidates,
         bad_directory_logs=state.bad_directory_logs,
         rewrite_row_indices=updated_rewrite_rows,
+    )
+
+
+def clear_alignment(state: AlignmentBatchState, row_index: int) -> AlignmentBatchState:
+    _manifest_by_row(state.manifests, row_index)
+    updated_rk_raw = dict(state.rk_raw_by_row)
+    updated_rk_raw[row_index] = ""
+    return _recompute_state(
+        manifests=state.manifests,
+        base_raw_paths=state.base_raw_paths,
+        rk_raw_by_row=updated_rk_raw,
+        candidates=state.candidates,
+        bad_directory_logs=state.bad_directory_logs,
+        rewrite_row_indices=set(state.rewrite_row_indices),
     )
 
 
@@ -139,8 +140,8 @@ def enable_rewrite_rows(state: AlignmentBatchState, row_indices: list[int]) -> A
     )
 
 
-def _scan_candidate_root(root: Path) -> Tuple[list[RkCandidate], list[str]]:
-    if not root.exists() or not root.is_dir():
+def _scan_candidate_root(root: Path | None) -> Tuple[list[RkCandidate], list[str]]:
+    if root is None or not root.exists() or not root.is_dir():
         return [], []
 
     candidates = []
@@ -190,9 +191,8 @@ def _recompute_state(
     for manifest in manifests:
         manifest.raw_path = Path(base_raw_paths[manifest.row_index])
 
-    filtered_rewrite_rows = {
-        row_index for row_index in rewrite_row_indices if _normalize_rk_raw(rk_raw_by_row.get(row_index, ""))
-    }
+    manifest_row_indices = {manifest.row_index for manifest in manifests}
+    filtered_rewrite_rows = {row_index for row_index in rewrite_row_indices if row_index in manifest_row_indices}
 
     normalized_rk_raw = dict(rk_raw_by_row)
     for manifest in manifests:
@@ -216,7 +216,7 @@ def _recompute_state(
                     manifest=manifest,
                     rk_raw_value=rk_raw_value,
                     selected_candidate_index=candidate_index,
-                    status="aligned",
+                    status=_aligned_status(row_index, filtered_rewrite_rows),
                 )
             )
             if candidate_index >= cursor:
@@ -229,7 +229,7 @@ def _recompute_state(
                 manifest=manifest,
                 rk_raw_value="",
                 selected_candidate_index=selected_candidate_index,
-                status="pending",
+                status=_pending_status(row_index, filtered_rewrite_rows),
             )
         )
         if selected_candidate_index == -1:
@@ -271,6 +271,25 @@ def _normalize_rk_raw(value: object) -> str:
 
 def _strip_x_suffix(value: str) -> str:
     return value[:-1] if value.endswith("x") else value
+
+
+def _optional_root_path(root_value: str) -> Path | None:
+    normalized = str(root_value or "").strip()
+    if not normalized:
+        return None
+    return Path(normalized)
+
+
+def _aligned_status(row_index: int, rewrite_row_indices: Set[int]) -> str:
+    if row_index in rewrite_row_indices:
+        return "rewrite_aligned"
+    return "aligned"
+
+
+def _pending_status(row_index: int, rewrite_row_indices: Set[int]) -> str:
+    if row_index in rewrite_row_indices:
+        return "rewrite_pending"
+    return "pending"
 
 
 __all__ = [

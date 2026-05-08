@@ -88,6 +88,41 @@ def test_scan_rk_candidates_falls_back_to_dut_root_when_temp_path_has_no_candida
     assert bad_logs == []
 
 
+def test_scan_rk_candidates_preserves_temp_bad_logs_when_falling_back_to_dut_root(tmp_path: Path):
+    temp_root = tmp_path / "temp_root"
+    dut_root = tmp_path / "dut_root"
+    temp_root.mkdir()
+    dut_root.mkdir()
+
+    _mkdir_candidate(temp_root, "32x", preview_name=None)
+    _mkdir_candidate(temp_root, "33", preview_name=None)
+    _mkdir_candidate(dut_root, "40")
+
+    source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), str(dut_root))
+
+    assert source_root == dut_root
+    assert [candidate.folder_name for candidate in candidates] == ["40"]
+    assert any("32x" in log for log in bad_logs)
+    assert any("33" in log for log in bad_logs)
+
+
+def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_path: Path, monkeypatch):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    _mkdir_candidate(cwd, "77")
+
+    dut_root = tmp_path / "dut_root"
+    dut_root.mkdir()
+    _mkdir_candidate(dut_root, "40")
+
+    source_root, candidates, bad_logs = scan_rk_candidates("", str(dut_root))
+
+    assert source_root == dut_root
+    assert [candidate.folder_name for candidate in candidates] == ["40"]
+    assert bad_logs == []
+
+
 def test_build_alignment_batch_state_uses_historical_prefix_and_marks_pending_rows(tmp_path: Path):
     manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
     candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33", "34")]
@@ -148,3 +183,29 @@ def test_confirm_clear_and_rewrite_guard_recompute_consumption_monotonically(tmp
     assert [case.manifest.row_index for case in cleared.pending_cases] == [4]
     assert cleared.pending_cases[0].rk_raw_value == ""
     assert cleared.pending_cases[0].selected_candidate_index == 1
+
+
+def test_clear_then_reconfirm_keeps_rewrite_mode_and_guard(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
+    candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "31", 4: "32", 5: "33"},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    rewrite_state = enable_rewrite_rows(state, [3])
+    cleared = clear_alignment(rewrite_state, row_index=3)
+
+    assert 3 in cleared.rewrite_row_indices
+    assert [case.manifest.row_index for case in cleared.pending_cases] == [3]
+    assert cleared.pending_cases[0].status == "rewrite_pending"
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "row 3 cannot be rewritten to RK 33 because later confirmed rows would no longer be strictly increasing"
+        ),
+    ):
+        confirm_alignment(cleared, row_index=3, candidate_name="33")
