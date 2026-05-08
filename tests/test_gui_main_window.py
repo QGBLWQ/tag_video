@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import QApplication
 
 _APP = QApplication.instance() or QApplication([])
@@ -16,12 +17,12 @@ _CONFIG = {
 }
 
 _TAG_OPTIONS = {
-    "瀹夎鏂瑰紡": ["鎵嬫寔", "绌挎埓", "杞藉叿"],
-    "杩愬姩妯″紡": ["琛岃蛋", "璺戞"],
-    "杩愰暅鏂瑰紡": ["鎺ㄦ媺"],
-    "鍏夋簮": ["姝ｅ父"],
-    "鐢婚潰鐗瑰緛": ["杈圭紭鐗瑰緛 寮哄急"],
-    "褰卞儚琛ㄨ揪": ["椋庢櫙褰曞儚"],
+    "\u5b89\u88c5\u65b9\u5f0f": ["\u624b\u6301", "\u7a7f\u6234", "\u8f66\u8f7d"],
+    "\u8fd0\u52a8\u6a21\u5f0f": ["\u884c\u8d70", "\u8dd1\u6b65"],
+    "\u8fd0\u955c\u65b9\u5f0f": ["\u5e73\u79fb"],
+    "\u5149\u6e90": ["\u6b63\u5e38"],
+    "\u753b\u9762\u7279\u5f81": ["\u7eb9\u7406\u4e30\u5bcc"],
+    "\u5f71\u50cf\u8868\u8fbe": ["\u8fd0\u52a8\u8ddf\u62cd"],
 }
 
 _DEVICE_ID_KEY = "\u8bbe\u5907\u7f16\u53f7"
@@ -65,27 +66,27 @@ def _make_tag_result(device_info=None):
     from video_tagging_assistant.excel_workbook import TagResult
 
     return TagResult(
-        install_method="鎵嬫寔",
-        motion_mode="琛岃蛋",
-        camera_move="鎺ㄦ媺",
-        light_source="姝ｅ父",
-        image_feature="杈圭紭鐗瑰緛 寮哄急",
-        image_expression="椋庢櫙褰曞儚",
+        install_method="\u624b\u6301",
+        motion_mode="\u884c\u8d70",
+        camera_move="\u5e73\u79fb",
+        light_source="\u6b63\u5e38",
+        image_feature="\u7eb9\u7406\u4e30\u5bcc",
+        image_expression="\u8fd0\u52a8\u8ddf\u62cd",
         scene_description="case reviewed",
         device_info=device_info or {},
-        review_status="瀹℃牳閫氳繃",
+        review_status="\u5ba1\u6838\u901a\u8fc7",
     )
 
 
 def _make_ai_result():
     return {
-        "瀹夎鏂瑰紡": "鎵嬫寔",
-        "杩愬姩妯″紡": "琛岃蛋",
-        "杩愰暅鏂瑰紡": "鎺ㄦ媺",
-        "鍏夋簮": "姝ｅ父",
-        "鐢婚潰鐗瑰緛": ["杈圭紭鐗瑰緛 寮哄急"],
-        "褰卞儚琛ㄨ揪": ["椋庢櫙褰曞儚"],
-        "鐢婚潰鎻忚堪": "case reviewed",
+        "\u5b89\u88c5\u65b9\u5f0f": "\u624b\u6301",
+        "\u8fd0\u52a8\u6a21\u5f0f": "\u884c\u8d70",
+        "\u8fd0\u955c\u65b9\u5f0f": "\u5e73\u79fb",
+        "\u5149\u6e90": "\u6b63\u5e38",
+        "\u753b\u9762\u7279\u5f81": ["\u7eb9\u7406\u4e30\u5bcc"],
+        "\u5f71\u50cf\u8868\u8fbe": ["\u8fd0\u52a8\u8ddf\u62cd"],
+        "\u753b\u9762\u63cf\u8ff0": "case reviewed",
     }
 
 
@@ -169,6 +170,7 @@ def test_alignment_review_and_execution_tabs_initially_disabled():
 
 def test_batch_load_reads_rk_raw_from_get_list_sheet(tmp_path):
     window = _make_window()
+    window._alignment_tab.load_batch = MagicMock()
     manifest = _make_manifest("case_A_0078", row_index=3)
     workbook_path = tmp_path / "records.xlsx"
     workbook_path.write_text("", encoding="utf-8")
@@ -190,6 +192,83 @@ def test_batch_load_reads_rk_raw_from_get_list_sheet(tmp_path):
         )
 
     mock_load_rk_raw.assert_called_once_with(workbook_path, source_sheet="获取列表")
+
+
+def test_batch_load_passes_adb_exe_to_rk_candidate_scan(tmp_path):
+    window = _make_window()
+    window._alignment_tab.load_batch = MagicMock()
+    manifest = _make_manifest("case_A_0078", row_index=3)
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+    fake_state = MagicMock()
+
+    with patch("video_tagging_assistant.gui.main_window.load_rk_raw_values", return_value={}), patch(
+        "video_tagging_assistant.gui.main_window.scan_rk_candidates",
+        return_value=(Path("/tmp/rk"), [], []),
+    ) as mock_scan_rk_candidates, patch(
+        "video_tagging_assistant.gui.main_window.build_alignment_batch_state",
+        return_value=fake_state,
+    ):
+        window._on_batch_loaded(
+            {
+                "manifests": [manifest],
+                "source_workbook": workbook_path,
+                "writeback_workbook": workbook_path,
+            }
+        )
+
+    mock_scan_rk_candidates.assert_called_once_with(
+        temp_root="",
+        dut_root="/mnt",
+        adb_exe="adb.exe",
+    )
+
+
+def test_close_event_shuts_down_alignment_tab_before_execution_worker():
+    window = _make_window()
+    close_event = QCloseEvent()
+    call_order = []
+
+    window._alignment_tab.shutdown = MagicMock(side_effect=lambda: call_order.append("alignment_shutdown"))
+    window._worker.stop.side_effect = lambda: call_order.append("worker_stop")
+    window._worker.wait.side_effect = lambda timeout: call_order.append(("worker_wait", timeout))
+
+    window.closeEvent(close_event)
+
+    window._alignment_tab.shutdown.assert_called_once_with()
+    window._worker.stop.assert_called_once_with()
+    window._worker.wait.assert_called_once_with(3000)
+    assert call_order == [
+        "alignment_shutdown",
+        "worker_stop",
+        ("worker_wait", 3000),
+    ]
+
+
+def test_close_event_keeps_window_open_when_alignment_shutdown_fails():
+    window = _make_window()
+    close_event = QCloseEvent()
+    call_order = []
+
+    window._alignment_tab.shutdown = MagicMock(side_effect=RuntimeError("preview stop failed"))
+    window._worker.stop.side_effect = lambda: call_order.append("worker_stop")
+    window._worker.wait.side_effect = lambda timeout: call_order.append(("worker_wait", timeout))
+    window.statusBar().showMessage = MagicMock()
+
+    window.closeEvent(close_event)
+
+    window._alignment_tab.shutdown.assert_called_once_with()
+    window._worker.stop.assert_called_once_with()
+    window._worker.wait.assert_called_once_with(3000)
+    window.statusBar().showMessage.assert_called_once_with(
+        "alignment shutdown failed: preview stop failed",
+        0,
+    )
+    assert not close_event.isAccepted()
+    assert call_order == [
+        "worker_stop",
+        ("worker_wait", 3000),
+    ]
 
 
 def test_main_window_keeps_review_locked_until_alignment_and_tagging_finish(tmp_path):

@@ -146,6 +146,7 @@ class MainWindow(QMainWindow):
             _, candidates, bad_logs = scan_rk_candidates(
                 temp_root=str(self._config.get("temp_path", "")),
                 dut_root=str(self._config.get("dut_root", "")),
+                adb_exe=str(self._config.get("adb_exe", "adb")),
             )
             initial_state = build_alignment_batch_state(
                 manifests=self._loaded_manifests,
@@ -276,8 +277,22 @@ class MainWindow(QMainWindow):
             self._enqueued_case_ids.add(manifest.case_id)
 
     def closeEvent(self, event) -> None:
+        alignment_tab = getattr(self, "_alignment_tab", None)
+        shutdown_error = None
+        try:
+            if alignment_tab is not None and hasattr(alignment_tab, "shutdown"):
+                alignment_tab.shutdown()
+        except Exception as exc:
+            shutdown_error = exc
+
         self._worker.stop()
         self._worker.wait(3000)
+
+        if shutdown_error is not None:
+            event.ignore()
+            self.statusBar().showMessage(f"alignment shutdown failed: {shutdown_error}", 0)
+            return
+
         super().closeEvent(event)
 
 

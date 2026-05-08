@@ -147,3 +147,11 @@ output/
 ├── compressed/       # 送模压缩视频（临时）
 └── cache/            # 打标缓存（按 case_id 分目录）
 ```
+
+---
+
+## Alignment Preview Notes
+
+- If `temp_path` does not provide usable RK data and `dut_root` points to a device-side path such as `/mnt/nvme/CapturedData`, the GUI scans remote RK directories through `adb.exe` and pulls preview images into a local cache when needed. Remote alignment therefore requires a working `adb.exe`.
+- The alignment tab prebuilds DJI normal/night previews in the background right after a batch is loaded instead of waiting for the user to click a case. This step requires `ffprobe.exe` and `ffmpeg.exe`, either from `config.json` or from `PATH`.
+- `alignment_preview_frame_count`, `alignment_preview_skip_frames`, and `alignment_preview_workers` control preview frame count, fixed frame skipping, and background concurrency.
