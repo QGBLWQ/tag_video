@@ -1,8 +1,17 @@
+"""Excel 工作簿读写入口。
+
+集中处理「获取列表」「创建记录」「审核结果」以及对齐写回等逻辑，
+是 GUI 流水线与台账文件之间的主要桥接层。
+"""
+
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Set
+
+logger = logging.getLogger(__name__)
 
 from openpyxl import load_workbook
 
@@ -45,6 +54,8 @@ GET_LIST_REQUIRED_HEADERS = {"处理状态", "RK_raw", "Action5Pro_Nomal", "Acti
 
 @dataclass
 class GetListRow:
+    """从「获取列表」中抽取出的最小行模型。"""
+
     created_date: str
     status: str
     rk_raw: str
@@ -53,15 +64,18 @@ class GetListRow:
 
 
 def _reject_xlsm_write(workbook_path: Path) -> None:
+    """拒绝直接写回 xlsm，避免破坏原始宏工作簿。"""
     if Path(workbook_path).suffix.lower() == ".xlsm":
         raise ValueError(f"{workbook_path} 是 .xlsm 工作簿，当前仅支持只读访问，禁止原地写回以避免损坏台账")
 
 
 def _header_map(sheet) -> Dict[str, int]:
+    """读取第 1 行表头，并返回“表头名 -> 列号”映射。"""
     return {str(cell.value).strip(): idx + 1 for idx, cell in enumerate(sheet[1]) if cell.value is not None}
 
 
 def _header_map_for_row(sheet, row_index: int) -> Dict[str, int]:
+    """读取指定行表头，并返回“表头名 -> 列号”映射。"""
     return {
         str(cell.value).strip(): idx + 1
         for idx, cell in enumerate(sheet[row_index])
@@ -70,10 +84,12 @@ def _header_map_for_row(sheet, row_index: int) -> Dict[str, int]:
 
 
 def _extract_raw_suffix(raw_path: str) -> str:
+    """提取 Raw 路径末尾文件名中的 RK 序号片段。"""
     return Path(raw_path).name.split("_")[-1]
 
 
 def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListRow]:
+    """把「获取列表」逐行解析成 `GetListRow` 列表。"""
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[source_sheet]
     created_date = str(sheet.cell(1, 2).value or "").strip()
@@ -102,6 +118,7 @@ def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListR
 
 
 def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
+    """读取「获取列表」中每个有效视频行对应的 RK_raw 值。"""
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
@@ -124,6 +141,7 @@ def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]
 
 
 def load_aligned_rk_raw_rows(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
+    """仅返回已经写入 RK_raw 的行号映射。"""
     return {
         row_index: rk_raw
         for row_index, rk_raw in load_rk_raw_values(workbook_path, source_sheet).items()
@@ -132,6 +150,7 @@ def load_aligned_rk_raw_rows(workbook_path: Path, source_sheet: str) -> Dict[int
 
 
 def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
+    """把单行对齐结果写回「获取列表」的 RK_raw 列。"""
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
@@ -143,10 +162,12 @@ def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, r
 
 
 def clear_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int) -> None:
+    """清空指定行的 RK_raw 值。"""
     write_rk_raw_value(workbook_path, source_sheet, row_index, "")
 
 
 def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_list_row: GetListRow) -> ExcelCaseRecord:
+    """用 RK_raw + DJI 文件名三元组匹配「创建记录」中的唯一行。"""
     matches = [
         row
         for row in create_record_rows
@@ -169,6 +190,7 @@ def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_lis
 
 
 def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
+    """确保流水线运行状态列存在，不存在时自动追加。"""
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
@@ -182,6 +204,7 @@ def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
 
 
 def _load_create_record_rows(workbook_path: Path, source_sheet: str) -> List[ExcelCaseRecord]:
+    """把「创建记录」解析成 `ExcelCaseRecord` 列表。"""
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -210,6 +233,7 @@ def _load_create_record_rows(workbook_path: Path, source_sheet: str) -> List[Exc
 
 
 def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses: Set[str]) -> List[ExcelCaseRecord]:
+    """从指定 sheet 中读取允许状态的 case 行。"""
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -241,6 +265,7 @@ def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses
 
 
 def update_pipeline_status(workbook_path: Path, source_sheet: str, case_id: str, status_updates: Dict[str, str]) -> None:
+    """按 case_id 更新流水线运行状态列。"""
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
@@ -263,6 +288,7 @@ def build_case_manifests(
     server_root: Path,
     mode: str,
 ) -> List[CaseManifest]:
+    """把 Excel 行模型转换成执行阶段使用的 `CaseManifest`。"""
     if source_sheet == "获取列表":
         create_record_rows = _load_create_record_rows(
             workbook_path,
@@ -296,9 +322,9 @@ def build_case_manifests(
 
 
 def get_next_case_sequence(workbook_path: Path, pc_id: str) -> int:
-    """Read 「创建记录」 and return the next available sequence number for pc_id.
+    """读取「创建记录」，计算指定设备前缀下一个可用流水号。
 
-    Returns 1 if sheet doesn't exist or has no matching rows.
+    当工作簿、sheet 或匹配行不存在时，默认从 1 开始。
     """
     if not workbook_path.exists():
         return 1
@@ -334,10 +360,10 @@ def load_get_list_manifests(
     mode: str,
     starting_sequence: int = 1,
 ) -> List[CaseManifest]:
-    """Read 「获取列表」 only and build CaseManifest objects.
+    """仅基于「获取列表」构建 `CaseManifest` 列表。
 
-    Does NOT require 「创建记录」 to exist. case_id is derived as case_{pc_id}_{seq:04d}.
-    Designed for the tagging tab where 「创建记录」 is populated only after review approval.
+    这个入口不依赖「创建记录」存在，主要供打标页预先生成 case_id
+    并在审核通过后再回填「创建记录」时使用。
     """
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[source_sheet]
@@ -381,6 +407,7 @@ def load_confirmed_cases(
     case_key_column: str,
     status_column: str,
 ) -> List[ConfirmedCaseRow]:
+    """读取指定 sheet 中已存在的 case 行，用于旧审核/同步流程。"""
     workbook = load_workbook(workbook_path)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
@@ -408,6 +435,7 @@ def load_confirmed_cases(
 
 
 def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[ReviewSheetRow]) -> None:
+    """向审核结果 sheet 批量写入或更新审核行。"""
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     if review_sheet in workbook.sheetnames:
@@ -450,6 +478,7 @@ def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[Review
 
 
 def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Dict[str, str]]:
+    """读取审核结果中已通过的记录，供后续同步或执行。"""
     workbook = load_workbook(workbook_path)
     sheet = workbook[review_sheet]
     headers = _header_map(sheet)
@@ -471,6 +500,7 @@ def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Di
 
 
 def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str) -> None:
+    """把审核结果中的通过项同步回源 sheet 的最终结果列。"""
     _reject_xlsm_write(workbook_path)
     workbook = load_workbook(workbook_path)
     source = workbook[source_sheet]
@@ -482,7 +512,13 @@ def sync_approved_rows(workbook_path: Path, source_sheet: str, review_sheet: str
         decision = str(review.cell(row_index, review_headers["审核结论"]).value or "").strip()
         if decision not in {"审核通过", "修改后通过"}:
             continue
-        source_row = int(review.cell(row_index, review_headers["创建记录行号"]).value)
+        try:
+            source_row = int(review.cell(row_index, review_headers["创建记录行号"]).value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "sync_approved_rows: non-integer '创建记录行号' at review row %d, skipping", row_index
+            )
+            continue
         auto_summary = str(review.cell(row_index, review_headers["自动简介"]).value or "").strip()
         auto_tags = str(review.cell(row_index, review_headers["自动标签"]).value or "").strip()
         manual_summary = str(review.cell(row_index, review_headers["人工修订简介"]).value or "").strip()
@@ -518,7 +554,7 @@ _CREATE_RECORD_HEADERS = [
 
 
 def load_dut_info(workbook_path: Path) -> List[Dict[str, str]]:
-    """Read Dut_info sheet. Returns list of device dicts; default device (默认选项=是) first."""
+    """读取 `Dut_info` 设备清单，并把默认设备放到列表首位。"""
     workbook = load_workbook(workbook_path, data_only=True)
     if "Dut_info" not in workbook.sheetnames:
         return []
@@ -609,9 +645,10 @@ def upsert_create_record_row(
 
 
 def write_case_txt(manifest: "CaseManifest", tag_result: TagResult) -> Path:
-    """Write a GBK-encoded txt file for an approved case into manifest.local_case_root.
+    """为审核通过的 case 生成 GBK 编码 txt 文件。
 
-    Filename: {case_id}_{first_10_chars_of_scene_description}.txt
+    文件会写入 `manifest.local_case_root`，文件名使用
+    `{case_id}_{画面描述前 10 个字符}.txt` 规则。
     """
     d = datetime.strptime(manifest.created_date, "%Y%m%d")
     date_str = f"{d.year}/{d.month}/{d.day}"

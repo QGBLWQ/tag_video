@@ -1,3 +1,8 @@
+"""DJI 对齐预览生成工具。
+
+负责解析对齐页抽帧配置、校验视频流，并生成可缓存的预览帧序列。
+"""
+
 from __future__ import annotations
 
 import json
@@ -13,6 +18,7 @@ ALIGNMENT_PREVIEW_CACHE_METADATA_NAME = "alignment_preview_cache.json"
 
 
 def resolve_alignment_preview_settings(config: Mapping[str, object] | None) -> tuple[int, int, int, list[str]]:
+    """从配置中解析对齐预览抽帧参数，并返回规范化后的值与告警日志。"""
     settings = config if isinstance(config, Mapping) else {}
     logs: list[str] = []
     frame_count = _positive_int(
@@ -37,6 +43,7 @@ def resolve_alignment_preview_settings(config: Mapping[str, object] | None) -> t
 
 
 def _positive_int(raw_value: object, default: int, key: str, logs: list[str]) -> int:
+    """读取正整数配置项，不合法时回退默认值并记录日志。"""
     value = _coerce_int(raw_value)
     if value is None or value < 1:
         logs.append(f"{key}={raw_value!r} is invalid; using default {default}")
@@ -45,6 +52,7 @@ def _positive_int(raw_value: object, default: int, key: str, logs: list[str]) ->
 
 
 def _non_negative_int(raw_value: object, default: int, key: str, logs: list[str]) -> int:
+    """读取非负整数配置项，不合法时回退默认值并记录日志。"""
     value = _coerce_int(raw_value)
     if value is None or value < 0:
         logs.append(f"{key}={raw_value!r} is invalid; using default {default}")
@@ -53,6 +61,7 @@ def _non_negative_int(raw_value: object, default: int, key: str, logs: list[str]
 
 
 def _coerce_int(raw_value: object) -> int | None:
+    """尽量把原始配置值转换成整数，失败时返回 None。"""
     if isinstance(raw_value, bool):
         return None
     if isinstance(raw_value, int):
@@ -73,6 +82,7 @@ def _coerce_int(raw_value: object) -> int | None:
 
 
 def _probe_video_stream(video_path: Path, ffprobe_exe: str) -> None:
+    """用 ffprobe 校验视频流是否可读。"""
     result = subprocess.run(
         [
             ffprobe_exe,
@@ -89,6 +99,7 @@ def _probe_video_stream(video_path: Path, ffprobe_exe: str) -> None:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     stream_text = result.stdout.strip()
     if not stream_text:
@@ -96,10 +107,12 @@ def _probe_video_stream(video_path: Path, ffprobe_exe: str) -> None:
 
 
 def _alignment_preview_cache_metadata_path(output_dir: Path) -> Path:
+    """返回预览缓存元数据文件路径。"""
     return output_dir / ALIGNMENT_PREVIEW_CACHE_METADATA_NAME
 
 
 def _load_alignment_preview_cache_metadata(output_dir: Path) -> dict[str, int] | None:
+    """读取预览缓存元数据，不可用时返回 None。"""
     metadata_path = _alignment_preview_cache_metadata_path(output_dir)
     if not metadata_path.exists():
         return None
@@ -118,6 +131,7 @@ def _load_alignment_preview_cache_metadata(output_dir: Path) -> dict[str, int] |
 
 
 def _write_alignment_preview_cache_metadata(output_dir: Path, frame_count: int, skip_frames: int) -> None:
+    """写入当前抽帧参数，供后续命中缓存时校验。"""
     metadata_path = _alignment_preview_cache_metadata_path(output_dir)
     metadata_path.write_text(
         json.dumps({"frame_count": frame_count, "skip_frames": skip_frames}, ensure_ascii=False),
@@ -126,6 +140,7 @@ def _write_alignment_preview_cache_metadata(output_dir: Path, frame_count: int, 
 
 
 def _cached_alignment_preview_matches(output_dir: Path, frame_count: int, skip_frames: int) -> bool:
+    """判断现有缓存是否与当前抽帧配置一致。"""
     metadata = _load_alignment_preview_cache_metadata(output_dir)
     if metadata is None:
         return False
@@ -140,6 +155,7 @@ def build_dji_preview_frames(
     frame_count: int = DEFAULT_ALIGNMENT_PREVIEW_FRAME_COUNT,
     skip_frames: int = DEFAULT_ALIGNMENT_PREVIEW_SKIP_FRAMES,
 ) -> List[Path]:
+    """为单个 DJI 视频生成抽帧预览图，并复用可命中的缓存。"""
     if not Path(video_path).exists():
         raise FileNotFoundError(f"DJI preview source does not exist: {video_path}")
 
@@ -171,6 +187,7 @@ def build_dji_preview_frames(
             str(output_pattern),
         ],
         check=True,
+        timeout=120,
     )
     _write_alignment_preview_cache_metadata(output_dir, frame_count, skip_frames)
     return sorted(output_dir.glob("frame_*.jpg"))

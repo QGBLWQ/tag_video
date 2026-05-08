@@ -37,7 +37,13 @@ def compress_video(task: VideoTask, output_dir: Path, compression_config: Dict) 
     target = output_dir / f"{task.source_video_path.stem}_proxy.mp4"
     command = build_ffmpeg_command(task.source_video_path, target, compression_config)
 
-    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        command,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=int(compression_config.get("timeout_seconds", 300)),
+    )
 
     return CompressedArtifact(
         source_video_path=task.source_video_path,

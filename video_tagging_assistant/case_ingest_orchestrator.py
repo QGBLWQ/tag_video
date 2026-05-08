@@ -1,3 +1,9 @@
+"""case-ingest 流程编排器。
+
+负责串起单个 case 的 pull、move/copy、upload 三段流程，
+供 GUI 执行队列和批处理入口复用。
+"""
+
 import shutil
 import subprocess
 import threading
@@ -15,6 +21,7 @@ from video_tagging_assistant.upload_worker import upload_case_directory, upload_
 
 
 def _drain_upload_results(result_queue, upload_results):
+    """消费上传结果队列，并累计本轮统计信息。"""
     uploaded = 0
     skipped = 0
     failed = 0
@@ -33,6 +40,7 @@ def _drain_upload_results(result_queue, upload_results):
 
 
 def _build_upload_thread(task_queue, result_queue, stop_event, upload_worker):
+    """根据上传执行函数构造后台上传线程。"""
     if upload_worker is upload_worker_loop:
         return threading.Thread(
             target=upload_worker,
@@ -56,6 +64,17 @@ def run_case_ingest(
     wait_for_device_runner: Callable[[], None] = wait_for_device,
     skip_upload=False,
 ):
+    """顺序执行 case-ingest 任务，并按需并发上传。
+
+    参数:
+        tasks: 要执行的 case 任务序列。
+        pull_runner: pull 阶段执行函数。
+        copy_runner: move/copy 阶段执行函数。
+        upload_runner: 单 case 上传函数。
+        upload_worker: 后台上传 worker 入口。
+        wait_for_device_runner: 每个 case 开始前的设备就绪检查。
+        skip_upload: 为 True 时跳过上传，只执行 pull 和 copy。
+    """
     upload_results = {}
     processed = 0
     failed = 0
@@ -115,10 +134,10 @@ def run_case_ingest(
 
 
 def pull_case(manifest, config: dict) -> None:
-    """执行单个 case 的 adb pull 操作。
+    """把单个 case 的 RK 数据拉到本地临时目录。
 
-    adb pull {dut_root}/{rk_suffix}/. {local_case_root}/{case_id}_RK_raw_{rk_suffix}
-    用 /. 拉取目录内容而非目录本身，避免 adb 将远端目录嵌套进已存在的目标目录。
+    若 `temp_path` 中存在同名 RK 目录，则优先消费式 move 到目标位置，
+    否则回退到 adb pull。
     """
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
@@ -133,20 +152,12 @@ def pull_case(manifest, config: dict) -> None:
     subprocess.run(
         [config["adb_exe"], "pull", remote_path, str(dest)],
         check=True,
+        timeout=int(config.get("adb_pull_timeout", 600)),
     )
 
 
 def move_case(manifest, config: dict) -> None:
-    """执行单个 case 的本地文件 move 操作。
-
-    将以下文件/目录移入 {local_case_root}/{mode}/{created_date}/{case_id}/:
-      - {case_id}_RK_raw_{rk_suffix}    (adb pull 临时目录)
-      - {case_id}_{vs_normal.name}      (DJI 普通视频)
-      - {case_id}_night_{vs_night.name} (DJI 夜间视频，可选)
-
-    mode 优先取 manifest.mode（审核时根据设备动态决定），回退到 config["mode"]。
-    move 完成后清理空的 *_RK_raw_* 临时残留。
-    """
+    """把 pull 下来的 RK 数据与 DJI 视频整理到最终 case 目录。"""
     rk_suffix = manifest.raw_path.name
     case_id = manifest.case_id
     local_root = Path(config["local_case_root"])
@@ -184,6 +195,7 @@ def move_case(manifest, config: dict) -> None:
 
 
 def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 8) -> None:
+    """并发复制目录树，并通过回调上报文件级进度。"""
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -212,12 +224,7 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
 
 
 def upload_case(manifest, config: dict, progress_cb=None) -> None:
-    """执行单个 case 的服务器 upload 操作。
-
-    将 {local_case_root}/{mode}/{created_date}/{case_id}
-    整目录复制到 {server_upload_root}/{mode}/{created_date}/{case_id}
-    mode 优先取 manifest.mode，回退到 config["mode"]。
-    """
+    """把本地 case 目录复制到服务器上传目录。"""
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
     mode = (manifest.mode or "").strip() or config["mode"]
