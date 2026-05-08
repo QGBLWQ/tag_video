@@ -1,4 +1,8 @@
-"""Three-tab main window coordinating tagging, review, and execution."""
+"""GUI 主窗口。
+
+负责把打标、对齐、审核、执行四个环节串成一个完整流水线，
+并在各个 Tab 之间同步状态、写回结果与投递执行任务。
+"""
 
 from copy import deepcopy
 import shutil
@@ -34,6 +38,8 @@ from video_tagging_assistant.rk_alignment_service import build_alignment_batch_s
 
 
 class MainWindow(QMainWindow):
+    """新版三 Tab 流水线主窗口。"""
+
     def __init__(self, config: dict, tag_options: dict, parent=None) -> None:
         super().__init__(parent)
         self._config = config
@@ -81,6 +87,7 @@ class MainWindow(QMainWindow):
         self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
 
     def _apply_device_info_to_manifest(self, manifest, device_info) -> None:
+        """把设备信息写回 manifest，并同步更新本地/服务器目标路径。"""
         if not isinstance(device_info, dict):
             return
 
@@ -102,6 +109,7 @@ class MainWindow(QMainWindow):
             )
 
     def _write_review_outputs(self, manifest, tag_result) -> Path:
+        """将审核通过后的 xlsx/txt 产物写入本地 case 目录。"""
         if self._workbook_path.exists() and self._workbook_path.suffix.lower() == ".xlsx":
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
@@ -117,6 +125,7 @@ class MainWindow(QMainWindow):
         return txt_path
 
     def _sync_case_txt_to_server(self, manifest, txt_path) -> None:
+        """在全自动模式下，把刚写出的 txt 补传到服务器 case 目录。"""
         server_case_dir = Path(manifest.server_case_dir)
         if not server_case_dir.exists():
             return
@@ -129,6 +138,7 @@ class MainWindow(QMainWindow):
             raise RuntimeError(f"txt 上传失败: {exc}") from exc
 
     def _on_batch_loaded(self, payload: dict) -> None:
+        """响应打标页的批次加载事件，初始化对齐页状态。"""
         self._loaded_manifests = list(payload.get("manifests", []))
         self._workbook_path = Path(payload["writeback_workbook"])
         self._tagging_finished = False
@@ -173,6 +183,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_alignment_state_changed(self, confirmed: int, total: int, blocked: bool) -> None:
+        """接收对齐页状态变化，并决定审核页是否允许进入。"""
         self._alignment_confirmed = confirmed
         self._alignment_total = total
         self._alignment_blocked = blocked
@@ -190,6 +201,7 @@ class MainWindow(QMainWindow):
         self._maybe_enter_review()
 
     def _on_tagging_complete(self, results: list) -> None:
+        """保存打标结果与模式选择，等待进入审核阶段。"""
         if self._tagging_tab._xlsx_writeback_path:
             self._workbook_path = self._tagging_tab._xlsx_writeback_path
         else:
@@ -204,6 +216,7 @@ class MainWindow(QMainWindow):
         self._maybe_enter_review()
 
     def _maybe_enter_review(self) -> None:
+        """在打标和对齐都完成后，正式装载审核页。"""
         if self._review_loaded:
             return
         if not self._tagging_finished or not self._alignment_ready:
@@ -249,6 +262,7 @@ class MainWindow(QMainWindow):
         self._review_loaded = True
 
     def _on_case_approved(self, manifest, tag_result) -> None:
+        """处理单个 case 审核通过后的写回、补传与执行入队。"""
         if not self._alignment_ready:
             self._review_tab._awaiting_parent_confirmation = False
             self._review_tab._sync_action_buttons()
@@ -277,6 +291,7 @@ class MainWindow(QMainWindow):
             self._enqueued_case_ids.add(manifest.case_id)
 
     def closeEvent(self, event) -> None:
+        """窗口关闭时优雅停止对齐预处理线程与执行线程。"""
         alignment_tab = getattr(self, "_alignment_tab", None)
         shutdown_error = None
         try:
@@ -286,7 +301,9 @@ class MainWindow(QMainWindow):
             shutdown_error = exc
 
         self._worker.stop()
-        self._worker.wait(3000)
+        if not self._worker.wait(3000):
+            self._worker.terminate()
+            self._worker.wait(1000)
 
         if shutdown_error is not None:
             event.ignore()
@@ -297,11 +314,13 @@ class MainWindow(QMainWindow):
 
 
 # ---------------------------------------------------------------------------
-# Legacy window - kept for backward compatibility with app.py and older tests
+# 旧版窗口：仅为兼容历史 app.py 调用方式和旧测试保留
 # ---------------------------------------------------------------------------
 
 
 class PipelineMainWindow(QMainWindow):
+    """旧版简化流水线窗口。"""
+
     def __init__(
         self,
         workbook_path=None,
@@ -362,13 +381,16 @@ class PipelineMainWindow(QMainWindow):
         self.start_button.clicked.connect(self._handle_start)
 
     def _selected_tagging_mode(self) -> str:
+        """把界面文案转换成旧流程内部使用的模式值。"""
         return "cached" if self.tagging_mode_combo.currentText() == "复用旧打标结果" else "fresh"
 
     def _handle_pipeline_event(self, event) -> None:
+        """接收旧控制器事件并写入日志面板。"""
         stage_value = getattr(event.stage, "value", str(event.stage))
         self.append_log_line(f"{event.case_id} [{stage_value}] {event.message}")
 
     def _handle_scan(self):
+        """扫描可处理 case，并刷新旧版队列表格。"""
         manifests = self._scan_cases() if self._scan_cases is not None else []
         self._manifests_by_case_id = {manifest.case_id: manifest for manifest in manifests}
         self.queue_model.set_rows(
@@ -385,6 +407,7 @@ class PipelineMainWindow(QMainWindow):
         self.append_log_line(f"Scanned {len(manifests)} cases")
 
     def _handle_start(self):
+        """按旧流程启动打标，并把首个结果加载进审核面板。"""
         manifests = list(self._manifests_by_case_id.values())
         if not manifests or self._start_tagging is None:
             return
@@ -395,6 +418,7 @@ class PipelineMainWindow(QMainWindow):
             self.tabs.setCurrentIndex(1)
 
     def _approve_case(self, case_id: str, label: str) -> None:
+        """通过旧控制器确认 case，并在成功后触发执行。"""
         if self._controller is None:
             return
         approved = self._controller.approve_case(case_id)
@@ -403,27 +427,33 @@ class PipelineMainWindow(QMainWindow):
             self._run_execution_case(case_id)
 
     def _handle_approve(self):
+        """处理旧审核面板的直接通过操作。"""
         payload = self.review_panel.current_review_payload()
         self._approve_case(payload["case_id"], "approved in gui")
 
     def _handle_approve_after_edit(self):
+        """处理旧审核面板的修改后通过操作。"""
         payload = self.review_panel.current_review_payload()
         self._approve_case(payload["case_id"], "approved after edit in gui")
 
     def _handle_reject(self):
+        """记录旧审核面板的驳回动作。"""
         payload = self.review_panel.current_review_payload()
         self.append_log_line(f"{payload['case_id']} rejected in gui")
 
     def _handle_refresh_excel_reviews(self):
+        """从 Excel 读取外部审核结果，并回灌到旧执行流程。"""
         rows = self._refresh_excel_reviews() if self._refresh_excel_reviews is not None else []
         for row in rows:
             self._approve_case(row["case_id"], f"approved from excel: {row['review_decision']}")
 
     def _placeholder_tab(self, text: str):
+        """构造旧版占位页。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.addWidget(QLabel(text))
         return widget
 
     def append_log_line(self, line: str):
+        """向旧版日志面板追加一行文本。"""
         self.log_panel.append(line)

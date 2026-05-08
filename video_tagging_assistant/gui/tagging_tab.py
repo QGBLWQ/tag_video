@@ -329,6 +329,9 @@ class TaggingTab(QWidget):
         return True
 
     def _start_tagging(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+
         if not self._manifests:
             self._load_cases_from_workbook()
         if not self._manifests:
@@ -342,6 +345,14 @@ class TaggingTab(QWidget):
         self._progress_bar.setValue(0)
         self._log_panel.clear()
         self._start_btn.setEnabled(False)
+
+        if self._worker is not None:
+            try:
+                self._worker.progress.disconnect()
+                self._worker.error.disconnect()
+                self._worker.finished.disconnect()
+            except TypeError:
+                pass  # already disconnected
 
         self._worker = _TaggingWorker(self._config, self._manifests, mode)
         self._worker.progress.connect(self._on_progress)

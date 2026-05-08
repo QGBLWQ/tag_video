@@ -32,6 +32,7 @@ class AlignmentPreviewWorker(QThread):
         self._config = config
         self._manifests = list(manifests)
         self._stop_event = threading.Event()
+        self._rk_pull_thread = None
 
     def stop(self) -> None:
         """请求线程尽快停止，并中断后续任务提交。"""
@@ -133,11 +134,14 @@ class AlignmentPreviewWorker(QThread):
 
     def pull_rk_previews(self, candidates, dut_root, adb_exe) -> None:
         """启动后台线程并行拉取远端 RK 预览图。"""
-        threading.Thread(
+        if self._rk_pull_thread is not None and self._rk_pull_thread.is_alive():
+            return
+        self._rk_pull_thread = threading.Thread(
             target=self._pull_rk_previews_impl,
             args=(list(candidates), dut_root, adb_exe),
             daemon=True,
-        ).start()
+        )
+        self._rk_pull_thread.start()
 
     def _pull_rk_previews_impl(self, candidates, dut_root, adb_exe) -> None:
         from video_tagging_assistant.rk_alignment_service import (
