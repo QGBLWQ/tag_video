@@ -19,6 +19,22 @@ from video_tagging_assistant.pipeline_models import CaseManifest
 _RK_DIR_PATTERN = re.compile(r"^\d+x?$")
 
 
+def _translate_adb_stderr(stderr: str) -> str:
+    text = stderr.lower()
+    for keyword, chinese in [
+        ("device not found", "设备未连接，请检查 USB 线缆并确认 adb devices 可见"),
+        ("no devices", "设备未连接，请检查 USB 线缆并确认 adb devices 可见"),
+        ("permission denied", "权限不足，请在设备端执行 adb root"),
+        ("no such file or directory", "远端路径不存在，请检查 dut_root 配置"),
+        ("timeout", "设备响应超时，请重启 adb server（adb kill-server）"),
+        ("timed out", "设备响应超时，请重启 adb server（adb kill-server）"),
+        ("offline", "设备离线，请重新插拔 USB 并等待设备上线"),
+    ]:
+        if keyword in text:
+            return f"{chinese}（原始错误: {stderr.strip()}）"
+    return f"adb 命令失败: {stderr.strip()}"
+
+
 @dataclass(frozen=True)
 class RkCandidate:
     """一个可用于对齐的 RK 候选目录。"""
@@ -232,16 +248,22 @@ def _scan_remote_candidate_root(root_value: str, adb_exe: str) -> Tuple[list[RkC
 
 def _adb_find(adb_exe: str, target_path: str, extra_args: list[str]) -> list[str]:
     """调用 `adb shell find` 并返回非空输出行。"""
-    result = subprocess.run(
-        [adb_exe, "shell", "find", target_path, *extra_args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            [adb_exe, "shell", "find", target_path, *extra_args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"adb shell find {target_path} 超时，请检查设备连接状态") from None
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"adb shell find failed for {target_path}")
+        stderr_text = (result.stderr or "").strip()
+        stdout_text = (result.stdout or "").strip()
+        raw = stderr_text or stdout_text or f"adb shell find failed for {target_path}"
+        raise RuntimeError(_translate_adb_stderr(raw))
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
