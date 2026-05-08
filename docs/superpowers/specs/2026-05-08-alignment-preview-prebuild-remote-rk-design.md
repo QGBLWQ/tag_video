@@ -37,7 +37,7 @@ The requested behavior is:
 
 - No automatic RK-DJI matching.
 - No streaming alignment before previews are ready.
-- No RK multi-frame preview generation. RK still uses the single existing jpeg.
+- No RK multi-frame preview generation. RK still uses the single existing `.jpg` or `.jpeg` preview image.
 - No change to downstream review or execution semantics.
 - No attempt to optimize preview generation beyond simple bounded multithreading.
 
@@ -111,7 +111,7 @@ Instead:
 - keep only names matching `^\d+x?$`
 - inspect each matching directory through `adb`
 - accept the candidate only if it contains at least one `.jpg` or `.jpeg`
-- pull only the preview jpeg to a local cache directory for UI display
+- pull only the preview `.jpg` or `.jpeg` file to a local cache directory for UI display
 
 Recommended local cache root:
 
@@ -275,7 +275,7 @@ This preserves the strict gate that every required alignment case must be valid 
 Add or update tests for:
 
 - remote RK candidate scan through `adb` when `dut_root` is not local
-- remote RK preview jpeg pull into the local cache
+- remote RK preview `.jpg`/`.jpeg` pull into the local cache
 - config-driven fixed-step preview sampling behavior
 - config fallback when preview settings are absent or invalid
 - background preview preparation not invoking `ffprobe/ffmpeg` from row-selection handlers

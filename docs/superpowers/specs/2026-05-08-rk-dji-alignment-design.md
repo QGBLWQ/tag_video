@@ -7,14 +7,14 @@ Current GUI pipeline assumes `获取列表` sheet already contains a usable `RK_
 At the same time, RK source folders under `/mnt/nvme/CapturedData` or mirrored `temp_path` have two important realities:
 
 - folder names can be plain numeric (`32`) or numeric plus `x` (`32x`)
-- a folder without a preview jpeg is considered unusable for manual alignment
+- a folder without a preview `.jpg` or `.jpeg` is considered unusable for manual alignment
 
 The new requirement is to add a manual RK-DJI alignment stage that runs in parallel with AI tagging. Operators should align each DJI `normal/night` pair to exactly one valid RK folder, write the selected RK folder name back to `RK_raw`, and only enter the existing review stage after both batch tagging and batch alignment are complete.
 
 ## Goals
 
 - Allow batch tagging to start even when `RK_raw` is blank.
-- Add a dedicated alignment UI that resolves blank `RK_raw` values by comparing DJI previews against RK jpeg previews.
+- Add a dedicated alignment UI that resolves blank `RK_raw` values by comparing DJI previews against RK `.jpg`/`.jpeg` previews.
 - Keep RK selection monotonic and consumption-based across the batch.
 - Reuse existing `.xlsm -> .xlsx` writeback behavior.
 - Preserve the existing review, execution, auto-mode, and upload flows after the alignment gate.
@@ -23,7 +23,7 @@ The new requirement is to add a manual RK-DJI alignment stage that runs in paral
 
 - No change to the downstream review UI semantics after review begins.
 - No attempt to auto-detect DJI-RK matches without operator confirmation.
-- No RK multi-frame preview generation. RK stays single-jpeg preview only.
+- No RK multi-frame preview generation. RK stays single-image preview only, using the existing `.jpg` or `.jpeg` file.
 - No automatic cascade rewrite of later cases when an earlier aligned case is changed.
 - No change to the existing full-suite smoke test baseline unrelated to this feature.
 
@@ -33,11 +33,11 @@ The new requirement is to add a manual RK-DJI alignment stage that runs in paral
 - Already aligned rows do not auto-enter alignment; rewriting uses a dedicated entry point inside the alignment page.
 - Review unlock is a strict batch gate: both batch tagging and batch alignment must be complete.
 - RK candidate discovery prefers `temp_path` when available, and falls back to `dut_root` (`/mnt/nvme/CapturedData`).
-- An RK folder is valid if and only if it contains a preview `jpeg/jpg`; folders without jpeg are excluded and logged as bad directories.
+- An RK folder is valid if and only if it contains a preview `.jpg` or `.jpeg`; folders without either extension are excluded and logged as bad directories.
 - Candidate ordering is consumption-based. When a case confirms an RK folder, that candidate is consumed and later cases default from the next candidate forward.
 - Historical non-empty `RK_raw` values in earlier workbook rows must participate in the default consumption cursor, even if those rows are not re-opened for alignment.
 - Rewriting a previously aligned case is allowed only when the new choice preserves strict monotonic unique assignment for later already-confirmed cases. Otherwise the rewrite is blocked and the user must first clear later affected cases.
-- DJI preview generation uses ffmpeg to build a uniformly sampled preview strip from the video pair. RK preview is the single existing jpeg from the folder.
+- DJI preview generation uses ffmpeg to build a uniformly sampled preview strip from the video pair. RK preview is the single existing `.jpg` or `.jpeg` file from the folder.
 
 ## User Workflow
 
@@ -71,7 +71,7 @@ For each pending alignment case, the operator sees:
 
 - DJI `normal` preview strip
 - DJI `night` preview strip
-- the currently selected RK jpeg preview
+- the currently selected RK `.jpg`/`.jpeg` preview
 
 The operator keeps DJI fixed and moves only the RK candidate:
 
@@ -133,8 +133,8 @@ For each candidate folder:
 
 Bad directories must be surfaced in the alignment log, for example:
 
-- `32x: missing preview jpeg, excluded from alignment`
-- `45: missing preview jpeg, excluded from alignment`
+- `32x: missing preview .jpg/.jpeg, excluded from alignment`
+- `45: missing preview .jpg/.jpeg, excluded from alignment`
 
 ### Ordering
 
@@ -151,7 +151,7 @@ Example ordering:
 - `32x`
 - `33`
 
-`32` and `32x` are distinct candidates if both contain jpeg previews.
+`32` and `32x` are distinct candidates if both contain preview `.jpg` or `.jpeg` files.
 
 ## DJI Preview Generation
 
@@ -183,7 +183,7 @@ This keeps preview generation stable across different clip lengths and avoids ov
 
 ### RK Preview Output
 
-RK preview generation does not create derived images. The alignment page reads the existing jpeg directly from the currently selected RK candidate folder.
+RK preview generation does not create derived images. The alignment page reads the existing `.jpg` or `.jpeg` directly from the currently selected RK candidate folder.
 
 ## Workbook Data Model Changes
 
@@ -226,7 +226,7 @@ Recommended logical entities:
   - folder name
   - numeric index
   - x-suffix flag
-  - preview jpeg path
+  - preview image path
   - source root path
 - `AlignmentCase`
   - workbook row index
@@ -381,7 +381,7 @@ Show:
 - previous/next RK buttons
 - DJI normal preview strip
 - DJI night preview strip
-- RK jpeg preview
+- RK `.jpg`/`.jpeg` preview
 - confirm / clear / save-and-next actions
 - persistent alignment log panel
 
@@ -389,7 +389,7 @@ Show:
 
 The alignment tab owns a visible log panel. At minimum it records:
 
-- bad RK directories excluded due to missing jpeg
+- bad RK directories excluded due to missing `.jpg`/`.jpeg`
 - preview generation failures
 - candidate exhaustion
 - successful confirmations
@@ -398,7 +398,7 @@ The alignment tab owns a visible log panel. At minimum it records:
 
 Examples:
 
-- `32x missing preview jpeg, excluded`
+- `32x missing preview .jpg/.jpeg, excluded`
 - `case_A_0123 normal preview generation failed`
 - `Remaining valid RK candidates are insufficient for pending alignment cases`
 - `case_A_0120 aligned to RK 33`
