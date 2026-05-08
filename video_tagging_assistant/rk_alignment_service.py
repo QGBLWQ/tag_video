@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -46,7 +47,7 @@ def scan_rk_candidates(temp_root: str, dut_root: str, adb_exe: str = "adb") -> T
     temp_path = _optional_root_path(temp_root)
     dut_path = _optional_root_path(dut_root)
     normalized_dut_root = str(dut_root or "").strip()
-    dut_is_remote = dut_path is not None and normalized_dut_root and (not dut_path.exists() or not dut_path.is_dir())
+    dut_is_remote = _is_remote_dut_root(normalized_dut_root)
 
     temp_candidates, temp_logs = _scan_candidate_root(temp_path)
     if temp_candidates:
@@ -54,7 +55,7 @@ def scan_rk_candidates(temp_root: str, dut_root: str, adb_exe: str = "adb") -> T
 
     if dut_path is not None and dut_path.exists() and dut_path.is_dir():
         dut_candidates, dut_logs = _scan_candidate_root(dut_path)
-    elif normalized_dut_root:
+    elif dut_is_remote:
         dut_candidates, dut_logs = _scan_remote_candidate_root(normalized_dut_root, adb_exe)
     else:
         dut_candidates, dut_logs = [], []
@@ -187,11 +188,15 @@ def _scan_remote_candidate_root(root_value: str, adb_exe: str) -> Tuple[list[RkC
     matched_directory_names = [Path(entry).name for entry in entries if _RK_DIR_PATTERN.fullmatch(Path(entry).name)]
 
     for folder_name in matched_directory_names:
-        preview_name = _find_remote_preview_name(adb_exe, root_value, folder_name)
-        if preview_name is None:
-            bad_logs.append(f"RK candidate {folder_name} under {root_value} is missing a preview jpg/jpeg file")
+        try:
+            preview_name = _find_remote_preview_name(adb_exe, root_value, folder_name)
+            if preview_name is None:
+                bad_logs.append(f"RK candidate {folder_name} under {root_value} is missing a preview jpg/jpeg file")
+                continue
+            preview_path = _pull_remote_preview(adb_exe, root_value, folder_name, preview_name)
+        except Exception as exc:
+            bad_logs.append(f"RK candidate {folder_name} under {root_value} failed during remote scan: {exc}")
             continue
-        preview_path = _pull_remote_preview(adb_exe, root_value, folder_name, preview_name)
         has_x_suffix = folder_name.endswith("x")
         candidates.append(
             RkCandidate(
@@ -237,7 +242,7 @@ def _find_remote_preview_name(adb_exe: str, root_value: str, folder_name: str) -
 
 
 def _pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, preview_name: str) -> Path:
-    cache_dir = Path("artifacts") / "alignment_rk_previews" / folder_name
+    cache_dir = _remote_preview_cache_dir(root_value, folder_name)
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_preview_path = cache_dir / preview_name
     if local_preview_path.exists():
@@ -256,6 +261,11 @@ def _pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, previe
     return local_preview_path
 
 
+def _remote_preview_cache_dir(root_value: str, folder_name: str) -> Path:
+    root_namespace = hashlib.sha1(_normalize_remote_root(root_value).encode("utf-8")).hexdigest()[:12]
+    return Path("artifacts") / "alignment_rk_previews" / root_namespace / folder_name
+
+
 def _matched_candidate_directory_count(root: object) -> int:
     if not isinstance(root, Path):
         return 0
@@ -267,6 +277,18 @@ def _matched_candidate_directory_count(root: object) -> int:
 def _empty_candidate_summary(root: object) -> str:
     matched_directory_count = _matched_candidate_directory_count(root)
     return f"RK scan root {root}: found {matched_directory_count} numeric directories, 0 valid RK candidates"
+
+
+def _is_remote_dut_root(root_value: str) -> bool:
+    normalized = _normalize_remote_root(root_value)
+    return bool(normalized) and normalized.startswith("/")
+
+
+def _normalize_remote_root(root_value: str) -> str:
+    normalized = str(root_value or "").strip()
+    while normalized.endswith("/") and normalized != "/":
+        normalized = normalized[:-1]
+    return normalized
 
 
 def _recompute_state(

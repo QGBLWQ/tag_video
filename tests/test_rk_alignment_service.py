@@ -253,6 +253,91 @@ def test_scan_rk_candidates_remote_root_uses_adb_find_and_pulls_preview(tmp_path
     ] in calls
 
 
+def test_scan_rk_candidates_uses_root_namespaced_remote_preview_cache(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def _fake_run(command, capture_output=False, text=False, encoding=None, errors=None, timeout=None, check=False):
+        calls.append(command)
+        root_value = command[3] if command[:3] == ["adb.exe", "shell", "find"] else ""
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedDataA",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "d",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedDataA/31\n", stderr="")
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedDataA/31",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedDataA/31/preview.jpg\n", stderr="")
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedDataB",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "d",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedDataB/31\n", stderr="")
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedDataB/31",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedDataB/31/preview.jpg\n", stderr="")
+        if command[:2] == ["adb.exe", "pull"]:
+            local_preview = Path(command[3])
+            local_preview.parent.mkdir(parents=True, exist_ok=True)
+            local_preview.write_bytes(b"A" if "CapturedDataA" in command[2] else b"B")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fake_run)
+
+    _, candidates_a, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataA", adb_exe="adb.exe")
+    _, candidates_b, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataB", adb_exe="adb.exe")
+
+    preview_a = candidates_a[0].preview_path
+    preview_b = candidates_b[0].preview_path
+
+    assert preview_a != preview_b
+    assert preview_a.parent.parent != preview_b.parent.parent
+    assert preview_a.read_bytes() == b"A"
+    assert preview_b.read_bytes() == b"B"
+    assert any(command[:2] == ["adb.exe", "pull"] for command in calls)
+
+
 def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_path: Path, monkeypatch):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
@@ -270,6 +355,23 @@ def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_p
     assert bad_logs == []
 
 
+def test_scan_rk_candidates_does_not_adb_scan_missing_local_looking_dut_root(tmp_path: Path, monkeypatch):
+    temp_root = tmp_path / "temp_root"
+    temp_root.mkdir()
+    dut_root = Path("C:/capturedData")
+
+    def _fail_run(*args, **kwargs):
+        raise AssertionError("adb should not be invoked for a missing local-looking dut_root")
+
+    monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fail_run)
+
+    source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), str(dut_root), adb_exe="adb.exe")
+
+    assert source_root == dut_root
+    assert candidates == []
+    assert bad_logs == ["RK scan root C:\\capturedData: found 0 numeric directories, 0 valid RK candidates"]
+
+
 def test_scan_rk_candidates_does_not_scan_cwd_when_dut_root_is_blank(tmp_path: Path, monkeypatch):
     cwd = tmp_path / "cwd"
     cwd.mkdir()
@@ -285,6 +387,77 @@ def test_scan_rk_candidates_does_not_scan_cwd_when_dut_root_is_blank(tmp_path: P
     assert candidates == []
     assert any(str(temp_root) in log for log in bad_logs)
     assert any("0 valid RK candidates" in log for log in bad_logs)
+
+
+def test_scan_rk_candidates_continues_after_per_folder_remote_failure(tmp_path: Path, monkeypatch):
+    calls = []
+
+    def _fake_run(command, capture_output=False, text=False, encoding=None, errors=None, timeout=None, check=False):
+        calls.append(command)
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedData",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "d",
+            "-print",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="/mnt/nvme/CapturedData/31\n/mnt/nvme/CapturedData/32\n",
+                stderr="",
+            )
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedData/31",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedData/31/preview.jpg\n", stderr="")
+        if command == [
+            "adb.exe",
+            "shell",
+            "find",
+            "/mnt/nvme/CapturedData/32",
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="/mnt/nvme/CapturedData/32/preview.jpg\n", stderr="")
+        if command[:2] == ["adb.exe", "pull"] and command[2].endswith("/32/preview.jpg"):
+            raise RuntimeError("preview vanished")
+        if command[:2] == ["adb.exe", "pull"]:
+            local_preview = Path(command[3])
+            local_preview.parent.mkdir(parents=True, exist_ok=True)
+            local_preview.write_bytes(b"jpeg")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fake_run)
+
+    source_root, candidates, bad_logs = scan_rk_candidates("", "/mnt/nvme/CapturedData", adb_exe="adb.exe")
+
+    assert str(source_root).replace("\\", "/").endswith("/mnt/nvme/CapturedData")
+    assert [candidate.folder_name for candidate in candidates] == ["31"]
+    assert any("32" in log and "failed during remote scan" in log for log in bad_logs)
+    assert any("found 2 numeric directories, 1 valid RK candidates" in log for log in bad_logs)
+    assert any(command[:2] == ["adb.exe", "pull"] for command in calls)
 
 
 def test_build_alignment_batch_state_uses_historical_prefix_and_marks_pending_rows(tmp_path: Path):
