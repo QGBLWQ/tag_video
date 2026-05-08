@@ -20,7 +20,16 @@ def _video_duration_seconds(video_path: Path, ffprobe_exe: str) -> float:
         capture_output=True,
         text=True,
     )
-    return max(float(result.stdout.strip() or "0"), 0.1)
+    duration_text = result.stdout.strip()
+    try:
+        duration = float(duration_text)
+    except ValueError as exc:
+        raise ValueError(f"invalid ffprobe duration output for {video_path}: {duration_text!r}") from exc
+
+    if duration <= 0:
+        raise ValueError(f"invalid ffprobe duration output for {video_path}: {duration_text!r}")
+
+    return duration
 
 
 def build_dji_preview_frames(
