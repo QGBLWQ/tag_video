@@ -1,3 +1,5 @@
+"""GUI 流水线中从 manifest 过渡到 provider 调用的桥接层。"""
+
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -14,6 +16,8 @@ from video_tagging_assistant.tagging_cache import load_cached_result, save_cache
 
 @dataclass
 class TaggingReviewRow:
+    """GUI 打标阶段返回给审核页的精简结果对象。"""
+
     case_id: str
     auto_summary: str
     auto_tags: str
@@ -22,6 +26,7 @@ class TaggingReviewRow:
 
 
 def _manifest_to_video_task(manifest: CaseManifest) -> VideoTask:
+    """把 GUI manifest 转换为独立打标流程使用的 `VideoTask`。"""
     return VideoTask(
         source_video_path=manifest.vs_normal_path,
         relative_path=Path(manifest.mode) / manifest.case_id / manifest.vs_normal_path.name,
@@ -32,6 +37,7 @@ def _manifest_to_video_task(manifest: CaseManifest) -> VideoTask:
 
 
 def _manifest_to_case_row(manifest: CaseManifest) -> ConfirmedCaseRow:
+    """把 manifest 转换为构造提示词上下文用的台账行结构。"""
     return ConfirmedCaseRow(
         case_key=manifest.case_id,
         workbook_row_index=manifest.row_index,
@@ -44,6 +50,7 @@ def _manifest_to_case_row(manifest: CaseManifest) -> ConfirmedCaseRow:
 
 
 def _generate_with_retry(provider, context, concurrency: dict):
+    """对 GUI 打标使用的 provider 调用加上重试逻辑。"""
     max_retries = concurrency.get("max_retries", 3)
     delay = concurrency.get("retry_backoff_seconds", 2)
     multiplier = concurrency.get("retry_backoff_multiplier", 2)
@@ -81,6 +88,23 @@ def run_batch_tagging(
     concurrency: Optional[Dict] = None,
     compression_config: Optional[Dict] = None,
 ) -> List[TaggingReviewRow]:
+    """执行 GUI 批量打标流程，串起压缩、提示词构建、模型调用和缓存。
+
+    Args:
+        manifests: 从工作簿驱动的 GUI 流程中加载出的 case manifest 列表。
+        cache_root: 打标缓存根目录。
+        output_root: 代理视频和中间产物输出根目录。
+        provider: 实际执行标签生成的 provider。
+        prompt_template: 配置中的提示词模板结构。
+        mode: `"fresh"` 或 `"cached"`，决定缓存复用策略。
+        event_callback: 接收 `PipelineEvent` 的事件回调。
+        compressor: 可注入的压缩实现。
+        concurrency: 并发和重试相关配置。
+        compression_config: 代理视频压缩配置。
+
+    Returns:
+        与输入 manifest 顺序一致的审核结果列表。
+    """
     if concurrency is None:
         concurrency = {}
     if compression_config is None:
@@ -122,6 +146,8 @@ def run_batch_tagging(
     # Phase 1: parallel compression
     tasks_by_id: Dict[str, VideoTask] = {}
     artifacts_by_id: Dict[str, object] = {}
+    total_to_tag = len(to_tag)
+    compressed_count = 0
 
     with ThreadPoolExecutor(max_workers=max(1, compression_workers)) as executor:
         future_map = {}
@@ -130,10 +156,31 @@ def run_batch_tagging(
             tasks_by_id[manifest.case_id] = task
             f = executor.submit(compressor, task, compressed_dir, compression_config)
             future_map[f] = manifest
+            event_callback(
+                PipelineEvent(
+                    case_id=manifest.case_id,
+                    stage=RuntimeStage.TAGGING_RUNNING,
+                    event_type="info",
+                    message="compressing",
+                    progress_current=compressed_count,
+                    progress_total=total_to_tag,
+                )
+            )
         for f in as_completed(future_map):
             manifest = future_map[f]
             try:
                 artifacts_by_id[manifest.case_id] = f.result()
+                compressed_count += 1
+                event_callback(
+                    PipelineEvent(
+                        case_id=manifest.case_id,
+                        stage=RuntimeStage.TAGGING_RUNNING,
+                        event_type="info",
+                        message="compressed",
+                        progress_current=compressed_count,
+                        progress_total=total_to_tag,
+                    )
+                )
             except Exception as exc:
                 event_callback(
                     PipelineEvent(
@@ -146,6 +193,7 @@ def run_batch_tagging(
 
     # Phase 2: parallel AI generation
     fresh_results: Dict[str, TaggingReviewRow] = {}
+    tagged_count = 0
 
     with ThreadPoolExecutor(max_workers=max(1, provider_workers)) as executor:
         future_map = {}
@@ -163,6 +211,8 @@ def run_batch_tagging(
                     stage=RuntimeStage.TAGGING_RUNNING,
                     event_type="info",
                     message="tagging",
+                    progress_current=tagged_count,
+                    progress_total=total_to_tag,
                 )
             )
             f = executor.submit(_generate_with_retry, provider, context, concurrency)
@@ -172,6 +222,17 @@ def run_batch_tagging(
             manifest = future_map[f]
             try:
                 generated = f.result()
+                tagged_count += 1
+                event_callback(
+                    PipelineEvent(
+                        case_id=manifest.case_id,
+                        stage=RuntimeStage.TAGGING_RUNNING,
+                        event_type="info",
+                        message="tagged",
+                        progress_current=tagged_count,
+                        progress_total=total_to_tag,
+                    )
+                )
             except Exception as exc:
                 event_callback(
                     PipelineEvent(

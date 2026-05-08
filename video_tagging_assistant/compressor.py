@@ -1,3 +1,5 @@
+"""代理视频生成阶段使用的 FFmpeg 命令拼装与压缩辅助模块。"""
+
 import subprocess
 from pathlib import Path
 from typing import Dict, List
@@ -6,6 +8,7 @@ from video_tagging_assistant.models import CompressedArtifact, VideoTask
 
 
 def build_ffmpeg_command(source: Path, target: Path, compression_config: Dict) -> List[str]:
+    """构造单个代理视频的 ffmpeg 命令行参数。"""
     width = compression_config["width"]
     video_bitrate = compression_config["video_bitrate"]
     audio_bitrate = compression_config["audio_bitrate"]
@@ -27,32 +30,14 @@ def build_ffmpeg_command(source: Path, target: Path, compression_config: Dict) -
     ]
 
 
-def get_ffmpeg_log_path(log_dir: Path, source_video_path: Path) -> Path:
-    compression_dir = Path(log_dir) / "compression"
-    compression_dir.mkdir(parents=True, exist_ok=True)
-    return compression_dir / f"{source_video_path.stem}.log"
-
 
 def compress_video(task: VideoTask, output_dir: Path, compression_config: Dict) -> CompressedArtifact:
+    """将单个源视频压缩为适合模型消费的代理视频。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{task.source_video_path.stem}_proxy.mp4"
     command = build_ffmpeg_command(task.source_video_path, target, compression_config)
 
-    logging_config = compression_config.get("logging", {})
-    log_dir = logging_config.get("log_dir")
-    capture_ffmpeg_output = logging_config.get("capture_ffmpeg_output", False)
-
-    stdout_handle = None
-    stderr_target = None
-    try:
-        if capture_ffmpeg_output and log_dir:
-            log_path = get_ffmpeg_log_path(Path(log_dir), task.source_video_path)
-            stdout_handle = open(log_path, "w", encoding="utf-8", errors="replace")
-            stderr_target = subprocess.STDOUT
-        subprocess.run(command, check=True, stdout=stdout_handle, stderr=stderr_target)
-    finally:
-        if stdout_handle is not None:
-            stdout_handle.close()
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     return CompressedArtifact(
         source_video_path=task.source_video_path,

@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -70,7 +71,12 @@ class _TaggingWorker(QThread):
         total = len(self._manifests)
 
         def _on_event(event):
-            self.progress.emit(0, total, getattr(event, "current_file", "") or event.case_id)
+            current = event.progress_current or 0
+            total_val = event.progress_total or total
+            msg = f"{event.case_id}: {event.message}"
+            self.progress.emit(current, total_val, msg)
+            if event.event_type in ("error",):
+                self.error.emit(msg)
 
         try:
             run_batch_tagging(
@@ -190,6 +196,13 @@ class TaggingTab(QWidget):
         self._current_file_label = QLabel("")
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._current_file_label)
+
+        # 执行日志面板
+        layout.addWidget(QLabel("执行日志："))
+        self._log_panel = QTextEdit()
+        self._log_panel.setReadOnly(True)
+        self._log_panel.setMaximumHeight(120)
+        layout.addWidget(self._log_panel)
 
         # 错误列表
         layout.addWidget(QLabel("错误（缺少打标数据的 case）："))
@@ -327,6 +340,7 @@ class TaggingTab(QWidget):
             return
         self._progress_bar.setMaximum(len(self._manifests))
         self._progress_bar.setValue(0)
+        self._log_panel.clear()
         self._start_btn.setEnabled(False)
 
         self._worker = _TaggingWorker(self._config, self._manifests, mode)
@@ -340,6 +354,8 @@ class TaggingTab(QWidget):
             self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(current)
         self._current_file_label.setText(filename)
+        if filename:
+            self._log_panel.append(filename)
 
     def _on_error(self, message: str) -> None:
         item = QListWidgetItem(message)
