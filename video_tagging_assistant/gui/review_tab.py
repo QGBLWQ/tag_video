@@ -218,6 +218,15 @@ class ReviewTab(QWidget):
 
         self._show_case(0)
 
+    def add_case(self, manifest, ai_result: dict) -> None:
+        """增量追加单个 case 到审核队列。"""
+        self._manifests.append(manifest)
+        self._tagging_results[manifest.case_id] = ai_result
+        # 如果当前正在显示"全部审核完毕"，切换到新 case
+        if self._current_index >= len(self._manifests) - 1:
+            self._show_case(len(self._manifests) - 1)
+        self._sync_action_buttons()
+
     def _show_case(self, index: int) -> None:
         """把指定索引的 case 渲染到审核界面。"""
         if not self._manifests or index >= len(self._manifests):

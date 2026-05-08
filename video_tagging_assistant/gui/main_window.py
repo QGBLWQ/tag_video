@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._review_loaded = False
         self._approved_case_ids = set()
         self._enqueued_case_ids = set()
+        self._case_readiness: dict = {}     # case_id -> {tagged:bool, aligned:bool, ai_result:dict}
 
         self.setWindowTitle("Video Tagging Pipeline")
 
@@ -150,6 +151,7 @@ class MainWindow(QMainWindow):
         self._review_loaded = False
         self._approved_case_ids = set()
         self._enqueued_case_ids = set()
+        self._case_readiness = {}
 
         try:
             rk_raw_by_row = load_rk_raw_values(self._workbook_path, source_sheet="\u83b7\u53d6\u5217\u8868")
@@ -183,11 +185,22 @@ class MainWindow(QMainWindow):
         )
 
     def _on_alignment_state_changed(self, confirmed: int, total: int, blocked: bool) -> None:
-        """接收对齐页状态变化，并决定审核页是否允许进入。"""
+        """接收对齐页状态变化，并逐 case 检查 readiness 以解锁审核。"""
         self._alignment_confirmed = confirmed
         self._alignment_total = total
         self._alignment_blocked = blocked
         self._alignment_ready = bool(self._loaded_manifests) and not blocked and confirmed == total
+
+        # 检查每个已对齐 case 的 readiness：打标+对齐都完成的立即进审核
+        alignment_tab = getattr(self, "_alignment_tab", None)
+        if alignment_tab is not None and alignment_tab._state is not None:
+            for view_case in alignment_tab._state.aligned_cases:
+                cid = view_case.manifest.case_id
+                entry = self._case_readiness.setdefault(cid, {"tagged": False, "aligned": False, "ai_result": None})
+                was_aligned = entry["aligned"]
+                entry["aligned"] = True
+                if not was_aligned and entry["tagged"]:
+                    self._maybe_add_to_review(view_case.manifest, entry["ai_result"])
 
         if not self._alignment_ready:
             self._tabs.setTabEnabled(2, False)
@@ -201,7 +214,7 @@ class MainWindow(QMainWindow):
         self._maybe_enter_review()
 
     def _on_tagging_complete(self, results: list) -> None:
-        """保存打标结果与模式选择，等待进入审核阶段。"""
+        """打标完成：逐个注册 case 结果，与对齐状态交叉检查。"""
         if self._tagging_tab._xlsx_writeback_path:
             self._workbook_path = self._tagging_tab._xlsx_writeback_path
         else:
@@ -211,9 +224,19 @@ class MainWindow(QMainWindow):
         selected_device_info = self._tagging_tab.selected_device_info()
         self._locked_device_info = selected_device_info if isinstance(selected_device_info, dict) else None
 
-        self._pending_tagging_results = list(results)
+        for result in results:
+            manifest = result["manifest"]
+            ai_result = result["ai_result"]
+            cid = manifest.case_id
+            entry = self._case_readiness.setdefault(cid, {"tagged": False, "aligned": False, "ai_result": None})
+            entry["tagged"] = True
+            entry["ai_result"] = ai_result
+            if self._auto_execution_enabled and self._locked_device_info:
+                self._apply_device_info_to_manifest(manifest, self._locked_device_info)
+            if entry["aligned"]:
+                self._maybe_add_to_review(manifest, ai_result)
+
         self._tagging_finished = True
-        self._maybe_enter_review()
 
     def _maybe_enter_review(self) -> None:
         """在打标和对齐都完成后，正式装载审核页。"""
@@ -260,6 +283,31 @@ class MainWindow(QMainWindow):
             self._review_tab._device_combo.setEnabled(True)
 
         self._review_loaded = True
+
+    def _maybe_add_to_review(self, manifest, ai_result) -> None:
+        """单个 case 准备好（tagged+aligned）后加入审核队列。"""
+        if manifest.case_id in self._approved_case_ids:
+            return
+
+        # 首次加入时初始化审核 Tab
+        if not self._review_loaded:
+            dut_devices = []
+            try:
+                dut_devices = load_dut_info(self._workbook_path)
+            except Exception:
+                pass
+            self._tabs.setTabEnabled(2, True)
+            self._tabs.setCurrentIndex(2)
+            self._review_tab.load_cases(
+                [manifest],
+                {manifest.case_id: ai_result},
+                dut_devices=dut_devices,
+                auto_mode=self._auto_execution_enabled,
+                locked_device=self._locked_device_info,
+            )
+            self._review_loaded = True
+        else:
+            self._review_tab.add_case(manifest, ai_result)
 
     def _on_case_approved(self, manifest, tag_result) -> None:
         """处理单个 case 审核通过后的写回、补传与执行入队。"""
