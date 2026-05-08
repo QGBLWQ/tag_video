@@ -298,8 +298,10 @@ def _confirmed_neighbor_bounds(
             else:
                 earlier_index = max(earlier_index, current_candidate_index)
             continue
-        later_index = current_candidate_index
-        break
+        if later_index is None:
+            later_index = current_candidate_index
+        else:
+            later_index = min(later_index, current_candidate_index)
 
     return earlier_index, later_index
 
