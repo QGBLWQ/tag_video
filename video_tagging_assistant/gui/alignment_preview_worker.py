@@ -1,8 +1,14 @@
+"""对齐页 DJI 预览预处理线程。
+
+负责在后台并行抽帧，避免用户点到某个 case 时才同步调用 ffmpeg/ffprobe，
+从而阻塞主界面。
+"""
+
 from __future__ import annotations
 
 import hashlib
 import threading
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -15,8 +21,11 @@ from video_tagging_assistant.alignment_preview import (
 
 
 class AlignmentPreviewWorker(QThread):
+    """后台批量生成 DJI normal/night 预览帧。"""
+
     preview_result = pyqtSignal(object)
     log_message = pyqtSignal(str)
+    rk_preview_ready = pyqtSignal(object)
 
     def __init__(self, config: dict, manifests: list, parent=None) -> None:
         super().__init__(parent)
@@ -25,10 +34,12 @@ class AlignmentPreviewWorker(QThread):
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
+        """请求线程尽快停止，并中断后续任务提交。"""
         self._stop_event.set()
         self.requestInterruption()
 
     def wait(self, msecs=None) -> bool:
+        """等待线程退出，并在 GUI 环境下顺带处理一次事件。"""
         result = super().wait() if msecs is None else super().wait(msecs)
         app = QApplication.instance()
         if app is not None:
@@ -36,6 +47,7 @@ class AlignmentPreviewWorker(QThread):
         return result
 
     def run(self) -> None:
+        """按配置并发生成整批 case 的预览帧。"""
         frame_count, skip_frames, worker_count, logs = resolve_alignment_preview_settings(self._config)
         for message in logs:
             if self._stop_event.is_set():
@@ -70,6 +82,7 @@ class AlignmentPreviewWorker(QThread):
             executor.shutdown(wait=True)
 
     def _prepare_case_preview(self, manifest, frame_count: int, skip_frames: int) -> dict:
+        """为单个 case 生成 normal/night 两组预览帧。"""
         cache_key = _preview_cache_key(manifest)
         cache_root = Path("artifacts") / "alignment_previews" / cache_key
         ffprobe_exe = self._config.get("ffprobe_exe", "ffprobe")
@@ -118,7 +131,75 @@ class AlignmentPreviewWorker(QThread):
         }
 
 
+    def pull_rk_previews(self, candidates, dut_root, adb_exe) -> None:
+        """启动后台线程并行拉取远端 RK 预览图。"""
+        threading.Thread(
+            target=self._pull_rk_previews_impl,
+            args=(list(candidates), dut_root, adb_exe),
+            daemon=True,
+        ).start()
+
+    def _pull_rk_previews_impl(self, candidates, dut_root, adb_exe) -> None:
+        from video_tagging_assistant.rk_alignment_service import (
+            find_remote_preview_name,
+            pull_remote_preview,
+        )
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_candidate = {
+                executor.submit(
+                    self._pull_single_rk_preview,
+                    c,
+                    dut_root,
+                    adb_exe,
+                    find_remote_preview_name,
+                    pull_remote_preview,
+                ): c
+                for c in candidates
+            }
+            for future in as_completed(future_to_candidate):
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    candidate = future_to_candidate[future]
+                    result = {
+                        "folder_name": candidate.folder_name,
+                        "preview_path": None,
+                        "status": "failed",
+                        "log": f"RK candidate {candidate.folder_name} preview pull failed: {exc}",
+                    }
+                self.rk_preview_ready.emit(result)
+
+    @staticmethod
+    def _pull_single_rk_preview(candidate, dut_root, adb_exe, find_fn, pull_fn) -> dict:
+        root_value = str(dut_root)
+        folder_name = candidate.folder_name
+        try:
+            preview_name = find_fn(adb_exe, root_value, folder_name)
+            if preview_name is None:
+                return {
+                    "folder_name": folder_name,
+                    "preview_path": None,
+                    "status": "no_preview",
+                    "log": f"RK candidate {folder_name} under {root_value} is missing a preview jpg/jpeg file",
+                }
+            preview_path = pull_fn(adb_exe, root_value, folder_name, preview_name)
+            return {
+                "folder_name": folder_name,
+                "preview_path": str(preview_path),
+                "status": "ready",
+            }
+        except Exception as exc:
+            return {
+                "folder_name": folder_name,
+                "preview_path": None,
+                "status": "failed",
+                "log": f"RK candidate {folder_name} under {root_value} failed during remote scan: {exc}",
+            }
+
+
 def _preview_cache_key(manifest) -> str:
+    """基于 case 标识和视频路径生成稳定缓存键。"""
     identity = "|".join(
         [
             str(manifest.case_id),

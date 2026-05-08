@@ -1,3 +1,9 @@
+"""对齐页界面。
+
+负责展示待对齐 case 队列、RK 候选预览与 DJI 抽帧结果，
+并把用户确认后的 RK_raw 写回工作簿。
+"""
+
 from copy import deepcopy
 from pathlib import Path
 
@@ -24,6 +30,8 @@ from video_tagging_assistant.rk_alignment_service import (
 
 
 class AlignmentTab(QWidget):
+    """第二阶段对齐页，承载 RK/DJI 人工对齐交互。"""
+
     alignment_state_changed = pyqtSignal(int, int, bool)
 
     def __init__(self, config: dict, parent=None) -> None:
@@ -37,12 +45,14 @@ class AlignmentTab(QWidget):
         self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
         self._preview_results_by_row = {}
+        self._rk_preview_paths = {}
         self._preview_worker = None
         self._preview_generation = 0
         self._runtime_logs = []
         self._setup_ui()
 
     def _setup_ui(self) -> None:
+        """初始化对齐页左右布局、日志区和操作按钮。"""
         outer = QHBoxLayout(self)
 
         left = QVBoxLayout()
@@ -100,6 +110,7 @@ class AlignmentTab(QWidget):
         self._clear_btn.clicked.connect(self._clear_current_case)
 
     def load_batch(self, manifests, workbook_path: Path, writeback_workbook_path: Path, initial_state) -> None:
+        """装载整批待对齐 case，并启动后台预览生成线程。"""
         self._stop_preview_worker()
         self._manifests = list(manifests)
         self._source_workbook_path = Path(workbook_path)
@@ -111,23 +122,65 @@ class AlignmentTab(QWidget):
             manifest.row_index: {"status": "pending"}
             for manifest in self._manifests
         }
+        self._rk_preview_paths = {}
         self._runtime_logs = []
         self._render()
         self._start_preview_worker()
+        self._start_rk_preview_pull()
 
     def load_rewrite_rows(self, row_indices) -> None:
+        """切换到重写模式，仅展示指定行号对应的已对齐 case。"""
         if self._state is not None:
             self._state = enable_rewrite_rows(self._state, list(row_indices))
         self._rewrite_mode_row_indices = list(row_indices)
         self._render()
 
     def shutdown(self) -> None:
+        """在窗口关闭时停止后台预览线程。"""
         self._stop_preview_worker()
 
+    def _start_rk_preview_pull(self) -> None:
+        """对 preview_path 为 None 的远端候选，启动后台预览拉取。"""
+        if self._state is None or not self._state.candidates:
+            return
+        pending = [c for c in self._state.candidates if c.preview_path is None]
+        if not pending:
+            return
+        dut_root = self._config.get("dut_root", "")
+        adb_exe = self._config.get("adb_exe", "adb")
+        if not dut_root:
+            return
+        worker = self._preview_worker
+        if worker is None:
+            return
+        worker.rk_preview_ready.connect(self._on_rk_preview_ready)
+        worker.pull_rk_previews(pending, dut_root, adb_exe)
+
+    def _on_rk_preview_ready(self, payload: dict) -> None:
+        """接收后台拉取的 RK 预览图，更新缓存并刷新当前视图。"""
+        folder_name = payload.get("folder_name")
+        if not folder_name:
+            return
+        preview_path = payload.get("preview_path")
+        if preview_path:
+            self._rk_preview_paths[folder_name] = Path(preview_path)
+        log_msg = payload.get("log")
+        if log_msg:
+            self._append_log(log_msg)
+            self._render_logs()
+        current_case = self._current_case()
+        if current_case is not None:
+            candidate_index = self._current_candidate_index(current_case)
+            candidate = self._candidate_by_index(candidate_index)
+            if candidate is not None and candidate.folder_name == folder_name:
+                self._refresh_candidate_widgets(current_case)
+
     def is_complete(self) -> bool:
+        """当前批次是否已全部对齐完成。"""
         return self._state is not None and not self._state.pending_cases and not self.is_blocked()
 
     def is_blocked(self) -> bool:
+        """当前是否存在阻塞对齐流程的问题。"""
         return self._state is not None and bool(self._state.blocked_messages)
 
     def _display_cases(self):
@@ -248,14 +301,19 @@ class AlignmentTab(QWidget):
                 f"{candidate.folder_name} ({candidate_index + 1}/{len(self._state.candidates)})"
             )
             if update_rk_preview:
-                pixmap = QPixmap(str(candidate.preview_path))
-                self._rk_preview_label.clear()
-                if pixmap.isNull():
-                    self._rk_preview_label.setText(candidate.preview_path.name)
+                preview_path = candidate.preview_path or self._rk_preview_paths.get(candidate.folder_name)
+                if preview_path is None:
+                    self._rk_preview_label.clear()
+                    self._rk_preview_label.setText("预览加载中...")
                 else:
-                    self._rk_preview_label.setPixmap(
-                        pixmap.scaled(320, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                    )
+                    pixmap = QPixmap(str(preview_path))
+                    self._rk_preview_label.clear()
+                    if pixmap.isNull():
+                        self._rk_preview_label.setText(Path(preview_path).name)
+                    else:
+                        self._rk_preview_label.setPixmap(
+                            pixmap.scaled(320, 240, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        )
         self._sync_buttons(case, candidate)
 
     def _sync_buttons(self, case, candidate) -> None:

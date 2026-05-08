@@ -1,3 +1,9 @@
+"""RK 与 DJI 序列对齐服务。
+
+负责扫描 RK 候选目录、维护对齐批次状态，以及在人工确认时
+校验“严格递增且一一对应”的业务约束。
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -15,15 +21,19 @@ _RK_DIR_PATTERN = re.compile(r"^\d+x?$")
 
 @dataclass(frozen=True)
 class RkCandidate:
+    """一个可用于对齐的 RK 候选目录。"""
+
     folder_name: str
     folder_path: Path
-    preview_path: Path
     numeric_value: int
     has_x_suffix: bool
+    preview_path: Path | None = None
 
 
 @dataclass
 class AlignmentViewCase:
+    """对齐页中展示的一条 case 视图状态。"""
+
     manifest: CaseManifest
     rk_raw_value: str
     selected_candidate_index: int
@@ -32,6 +42,8 @@ class AlignmentViewCase:
 
 @dataclass
 class AlignmentBatchState:
+    """整批对齐任务的完整运行状态。"""
+
     manifests: list[CaseManifest]
     candidates: list[RkCandidate]
     bad_directory_logs: list[str]
@@ -44,6 +56,7 @@ class AlignmentBatchState:
 
 
 def scan_rk_candidates(temp_root: str, dut_root: str, adb_exe: str = "adb") -> Tuple[Path | None, list[RkCandidate], list[str]]:
+    """扫描 temp_root / dut_root，返回可用 RK 候选和日志。"""
     temp_path = _optional_root_path(temp_root)
     dut_path = _optional_root_path(dut_root)
     normalized_dut_root = str(dut_root or "").strip()
@@ -80,6 +93,7 @@ def build_alignment_batch_state(
     candidates: Sequence[RkCandidate],
     bad_directory_logs: Sequence[str],
 ) -> AlignmentBatchState:
+    """基于 manifest、已写入的 RK_raw 与候选目录构建初始对齐状态。"""
     ordered_manifests = sorted(manifests, key=lambda manifest: manifest.row_index)
     base_raw_paths = {manifest.row_index: Path(manifest.raw_path) for manifest in ordered_manifests}
     normalized_rk_raw = {int(row_index): _normalize_rk_raw(value) for row_index, value in rk_raw_by_row.items()}
@@ -97,6 +111,7 @@ def build_alignment_batch_state(
 
 
 def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name: str) -> AlignmentBatchState:
+    """确认某一行与指定 RK 候选对齐，并返回新的批次状态。"""
     candidate_indices = _candidate_index_by_name(state.candidates)
     candidate_index = candidate_indices.get(candidate_name)
     if candidate_index is None:
@@ -118,6 +133,7 @@ def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name
 
 
 def clear_alignment(state: AlignmentBatchState, row_index: int) -> AlignmentBatchState:
+    """清空指定行的对齐结果，并重新计算批次状态。"""
     _manifest_by_row(state.manifests, row_index)
     updated_rk_raw = dict(state.rk_raw_by_row)
     updated_rk_raw[row_index] = ""
@@ -132,6 +148,7 @@ def clear_alignment(state: AlignmentBatchState, row_index: int) -> AlignmentBatc
 
 
 def enable_rewrite_rows(state: AlignmentBatchState, row_indices: list[int]) -> AlignmentBatchState:
+    """把指定已对齐行切换为“可重写”状态。"""
     aligned_rows = {
         row_index
         for row_index in row_indices
@@ -148,6 +165,7 @@ def enable_rewrite_rows(state: AlignmentBatchState, row_indices: list[int]) -> A
 
 
 def _scan_candidate_root(root: Path | None) -> Tuple[list[RkCandidate], list[str]]:
+    """扫描本地 RK 根目录，收集包含 jpg/jpeg 预览图的候选目录。"""
     if root is None or not root.exists() or not root.is_dir():
         return [], []
 
@@ -175,6 +193,7 @@ def _scan_candidate_root(root: Path | None) -> Tuple[list[RkCandidate], list[str
 
 
 def _find_preview_path(folder_path: Path) -> Path | None:
+    """在单个 RK 目录下寻找第一张可用的 jpg/jpeg 预览图。"""
     for child in sorted(folder_path.iterdir(), key=lambda path: path.name.lower()):
         if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg"}:
             return child
@@ -182,41 +201,37 @@ def _find_preview_path(folder_path: Path) -> Path | None:
 
 
 def _scan_remote_candidate_root(root_value: str, adb_exe: str) -> Tuple[list[RkCandidate], list[str]]:
+    """通过 adb 扫描远端 RK 候选目录（仅列目录，不拉取预览图）。
+
+    预览图由 AlignmentPreviewWorker 异步拉取以保持 UI 响应。
+    """
     entries = _adb_find(adb_exe, root_value, ["-mindepth", "1", "-maxdepth", "1", "-type", "d", "-print"])
     candidates = []
     bad_logs = []
     matched_directory_names = [Path(entry).name for entry in entries if _RK_DIR_PATTERN.fullmatch(Path(entry).name)]
 
     for folder_name in matched_directory_names:
-        try:
-            preview_name = _find_remote_preview_name(adb_exe, root_value, folder_name)
-            if preview_name is None:
-                bad_logs.append(f"RK candidate {folder_name} under {root_value} is missing a preview jpg/jpeg file")
-                continue
-            preview_path = _pull_remote_preview(adb_exe, root_value, folder_name, preview_name)
-        except Exception as exc:
-            bad_logs.append(f"RK candidate {folder_name} under {root_value} failed during remote scan: {exc}")
-            continue
         has_x_suffix = folder_name.endswith("x")
         candidates.append(
             RkCandidate(
                 folder_name=folder_name,
                 folder_path=Path(root_value) / folder_name,
-                preview_path=preview_path,
                 numeric_value=int(_strip_x_suffix(folder_name)),
                 has_x_suffix=has_x_suffix,
+                preview_path=None,
             )
         )
 
     bad_logs.append(
         f"RK scan root {root_value}: found {len(matched_directory_names)} numeric directories, "
-        f"{len(candidates)} valid RK candidates"
+        f"{len(candidates)} RK candidates (previews pending)"
     )
     candidates.sort(key=_candidate_sort_key)
     return candidates, bad_logs
 
 
 def _adb_find(adb_exe: str, target_path: str, extra_args: list[str]) -> list[str]:
+    """调用 `adb shell find` 并返回非空输出行。"""
     result = subprocess.run(
         [adb_exe, "shell", "find", target_path, *extra_args],
         capture_output=True,
@@ -230,7 +245,8 @@ def _adb_find(adb_exe: str, target_path: str, extra_args: list[str]) -> list[str
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _find_remote_preview_name(adb_exe: str, root_value: str, folder_name: str) -> str | None:
+def find_remote_preview_name(adb_exe: str, root_value: str, folder_name: str) -> str | None:
+    """在远端 RK 目录内寻找第一张可用预览图文件名。"""
     for child_name in sorted(
         _adb_find(adb_exe, f"{root_value}/{folder_name}", ["-mindepth", "1", "-maxdepth", "1", "-type", "f", "-print"]),
         key=str.lower,
@@ -241,7 +257,8 @@ def _find_remote_preview_name(adb_exe: str, root_value: str, folder_name: str) -
     return None
 
 
-def _pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, preview_name: str) -> Path:
+def pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, preview_name: str) -> Path:
+    """把远端 RK 预览图拉到本地缓存目录，并返回本地路径。"""
     cache_dir = _remote_preview_cache_dir(root_value, folder_name)
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_preview_path = cache_dir / preview_name
@@ -260,11 +277,13 @@ def _pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, previe
 
 
 def _remote_preview_cache_dir(root_value: str, folder_name: str) -> Path:
+    """根据远端根目录和文件夹名生成稳定的本地缓存目录。"""
     root_namespace = hashlib.sha1(_normalize_remote_root(root_value).encode("utf-8")).hexdigest()[:12]
     return Path("artifacts") / "alignment_rk_previews" / root_namespace / folder_name
 
 
 def _matched_candidate_directory_count(root: object) -> int:
+    """统计本地根目录下命中 RK 命名规则的子目录数量。"""
     if not isinstance(root, Path):
         return 0
     if root is None or not root.exists() or not root.is_dir():
@@ -273,11 +292,13 @@ def _matched_candidate_directory_count(root: object) -> int:
 
 
 def _empty_candidate_summary(root: object) -> str:
+    """生成“未发现有效 RK 候选”摘要日志。"""
     matched_directory_count = _matched_candidate_directory_count(root)
     return f"RK scan root {root}: found {matched_directory_count} numeric directories, 0 valid RK candidates"
 
 
 def _normalize_remote_root(root_value: str) -> str:
+    """规范化远端根目录字符串，去掉尾部多余斜杠。"""
     normalized = str(root_value or "").strip()
     while normalized.endswith("/") and normalized != "/":
         normalized = normalized[:-1]
@@ -292,6 +313,7 @@ def _recompute_state(
     bad_directory_logs: Sequence[str],
     rewrite_row_indices: Set[int],
 ) -> AlignmentBatchState:
+    """根据当前 RK_raw 写回值重新推导待对齐、已对齐与阻塞状态。"""
     candidate_indices = _candidate_index_by_name(candidates)
     blocked_messages = []
     pending_cases = []
@@ -370,10 +392,12 @@ def _recompute_state(
 
 
 def _candidate_sort_key(candidate: RkCandidate) -> tuple[int, int, str]:
+    """按数字序、x 后缀、原始文件夹名排序 RK 候选。"""
     return candidate.numeric_value, 1 if candidate.has_x_suffix else 0, candidate.folder_name
 
 
 def _candidate_index_by_name(candidates: Sequence[RkCandidate]) -> Dict[str, int]:
+    """构造 `folder_name -> candidate_index` 映射。"""
     return {candidate.folder_name: index for index, candidate in enumerate(candidates)}
 
 
@@ -384,6 +408,7 @@ def _validate_confirm_alignment(
     candidate_index: int,
     candidate_indices: Mapping[str, int],
 ) -> None:
+    """校验新确认的 RK 候选不会破坏整体严格递增约束。"""
     earlier_index, later_index = _confirmed_neighbor_bounds(state, row_index, candidate_indices)
     if earlier_index is not None and candidate_index <= earlier_index:
         raise ValueError(
@@ -402,6 +427,7 @@ def _confirmed_neighbor_bounds(
     row_index: int,
     candidate_indices: Mapping[str, int],
 ) -> Tuple[int | None, int | None]:
+    """计算目标行前后最近已确认对齐项的候选索引边界。"""
     earlier_index = None
     later_index = None
     ordered_manifests = sorted(state.manifests, key=lambda manifest: manifest.row_index)
@@ -431,12 +457,14 @@ def _confirmed_neighbor_bounds(
 
 
 def _confirm_verb(state: AlignmentBatchState, row_index: int) -> str:
+    """根据是否处于重写模式返回日志动词。"""
     if row_index in state.rewrite_row_indices:
         return "rewritten"
     return "confirmed"
 
 
 def _manifest_by_row(manifests: Sequence[CaseManifest], row_index: int) -> CaseManifest:
+    """按 Excel 行号定位对应的 manifest。"""
     for manifest in manifests:
         if manifest.row_index == row_index:
             return manifest
@@ -444,14 +472,17 @@ def _manifest_by_row(manifests: Sequence[CaseManifest], row_index: int) -> CaseM
 
 
 def _normalize_rk_raw(value: object) -> str:
+    """把 RK_raw 单元格值规范化为去空白字符串。"""
     return str(value or "").strip()
 
 
 def _strip_x_suffix(value: str) -> str:
+    """去掉 RK 候选目录名尾部的 `x` 标记。"""
     return value[:-1] if value.endswith("x") else value
 
 
 def _optional_root_path(root_value: str) -> Path | None:
+    """把可选根目录字符串转换为 `Path`，空值返回 None。"""
     normalized = str(root_value or "").strip()
     if not normalized:
         return None
@@ -459,12 +490,14 @@ def _optional_root_path(root_value: str) -> Path | None:
 
 
 def _aligned_status(row_index: int, rewrite_row_indices: Set[int]) -> str:
+    """返回已对齐行在 UI 中使用的状态文案。"""
     if row_index in rewrite_row_indices:
         return "rewrite_aligned"
     return "aligned"
 
 
 def _pending_status(row_index: int, rewrite_row_indices: Set[int]) -> str:
+    """返回待对齐行在 UI 中使用的状态文案。"""
     if row_index in rewrite_row_indices:
         return "rewrite_pending"
     return "pending"
@@ -478,5 +511,7 @@ __all__ = [
     "clear_alignment",
     "confirm_alignment",
     "enable_rewrite_rows",
+    "find_remote_preview_name",
+    "pull_remote_preview",
     "scan_rk_candidates",
 ]
