@@ -65,7 +65,7 @@ def scan_rk_candidates(temp_root: str, dut_root: str, adb_exe: str = "adb") -> T
     if dut_path is not None:
         logs = temp_logs + dut_logs
         if not dut_candidates:
-            logs.append(_empty_candidate_summary(normalized_dut_root or dut_path))
+            logs.append(_empty_candidate_summary(dut_path))
         return dut_path, dut_candidates, logs
 
     if temp_path is not None and not temp_candidates:

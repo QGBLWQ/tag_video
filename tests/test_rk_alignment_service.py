@@ -89,6 +89,23 @@ def test_scan_rk_candidates_falls_back_to_dut_root_when_temp_path_has_no_candida
     assert bad_logs == []
 
 
+def test_scan_rk_candidates_reports_local_numeric_directory_count_when_previews_are_missing(tmp_path: Path):
+    temp_root = tmp_path / "temp_root"
+    dut_root = tmp_path / "dut_root"
+    temp_root.mkdir()
+    dut_root.mkdir()
+
+    _mkdir_candidate(dut_root, "40", preview_name=None)
+    _mkdir_candidate(dut_root, "41x", preview_name=None)
+
+    source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), str(dut_root))
+
+    assert source_root == dut_root
+    assert candidates == []
+    assert any(str(dut_root) in log for log in bad_logs)
+    assert any("found 2 numeric directories, 0 valid RK candidates" in log for log in bad_logs)
+
+
 def test_scan_rk_candidates_preserves_temp_bad_logs_when_falling_back_to_dut_root(tmp_path: Path):
     temp_root = tmp_path / "temp_root"
     dut_root = tmp_path / "dut_root"
