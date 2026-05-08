@@ -157,6 +157,70 @@ def test_alignment_tab_load_batch_starts_background_preparation(tmp_path: Path, 
     assert worker.stopped
 
 
+def test_alignment_tab_waits_for_old_worker_to_finish_before_starting_next_one(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
+
+    class _DelayedStopWorker(QObject):
+        preview_result = pyqtSignal(object)
+        log_message = pyqtSignal(str)
+        finished = pyqtSignal()
+
+        created = []
+        full_wait_completed = False
+
+        def __init__(self, config: dict, manifests: list, parent=None) -> None:
+            super().__init__(parent)
+            self.manifests = list(manifests)
+            self.started = False
+            self.stopped = False
+            self.wait_calls = []
+            self.index = len(type(self).created)
+            type(self).created.append(self)
+
+        def start(self) -> None:
+            if self.index == 1:
+                assert type(self).full_wait_completed
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def wait(self, msecs=None) -> bool:
+            self.wait_calls.append(msecs)
+            if self.index == 0 and self.wait_calls == [2000]:
+                return False
+            if self.index == 0:
+                type(self).full_wait_completed = True
+            return True
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(alignment_tab_module, "AlignmentPreviewWorker", _DelayedStopWorker)
+    manifest_one = _make_manifest(tmp_path, row_index=3, case_id="case_A_0001")
+    manifest_two = _make_manifest(tmp_path, row_index=4, case_id="case_A_0002")
+    candidates = _make_candidates(tmp_path / "rk-source", "31", "32")
+    state_one = build_alignment_batch_state(
+        manifests=[manifest_one],
+        rk_raw_by_row={manifest_one.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    state_two = build_alignment_batch_state(
+        manifests=[manifest_two],
+        rk_raw_by_row={manifest_two.row_index: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    tab = alignment_tab_module.AlignmentTab(_CONFIG)
+    tab.load_batch([manifest_one], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_one)
+    tab.load_batch([manifest_two], tmp_path / "source.xlsx", tmp_path / "writeback.xlsx", state_two)
+
+    assert len(_DelayedStopWorker.created) == 2
+    assert _DelayedStopWorker.created[0].stopped
+    assert _DelayedStopWorker.created[0].wait_calls == [2000, None]
+    assert _DelayedStopWorker.created[1].started
+
+
 def test_alignment_tab_loads_pending_cases_and_bad_logs(tmp_path: Path, monkeypatch):
     import video_tagging_assistant.gui.alignment_tab as alignment_tab_module
 

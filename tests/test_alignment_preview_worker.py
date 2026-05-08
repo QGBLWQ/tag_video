@@ -57,7 +57,8 @@ def test_alignment_preview_worker_emits_prepared_payload(tmp_path: Path, monkeyp
     )
     worker.preview_result.connect(payloads.append)
 
-    worker.run()
+    worker.start()
+    assert worker.wait(5000)
 
     assert len(payloads) == 1
     assert payloads[0]["row_index"] == manifest.row_index
@@ -69,6 +70,39 @@ def test_alignment_preview_worker_emits_prepared_payload(tmp_path: Path, monkeyp
         (manifest.vs_normal_path, Path("artifacts") / "alignment_previews" / payloads[0]["cache_key"] / "normal", "probe.exe", "mpeg.exe", 4, 1),
         (manifest.vs_night_path, Path("artifacts") / "alignment_previews" / payloads[0]["cache_key"] / "night", "probe.exe", "mpeg.exe", 4, 1),
     ]
+
+
+def test_alignment_preview_worker_stops_running_thread_with_start_and_wait(tmp_path: Path, monkeypatch):
+    import video_tagging_assistant.gui.alignment_preview_worker as worker_module
+
+    manifest = _make_manifest(tmp_path)
+    build_calls = []
+
+    def _build_preview_frames(
+        video_path: Path,
+        output_dir: Path,
+        ffprobe_exe: str,
+        ffmpeg_exe: str,
+        frame_count: int = 30,
+        skip_frames: int = 2,
+    ):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        build_calls.append(output_dir)
+        frame_path = output_dir / "frame_000.jpg"
+        frame_path.write_bytes(b"frame")
+        return [frame_path]
+
+    monkeypatch.setattr(worker_module, "build_dji_preview_frames", _build_preview_frames)
+    payloads = []
+    worker = worker_module.AlignmentPreviewWorker(_CONFIG, [manifest])
+    worker.preview_result.connect(payloads.append)
+
+    worker.start()
+    assert worker.wait(5000)
+
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "prepared"
+    assert len(build_calls) == 2
 
 
 def test_alignment_preview_worker_emits_failed_payload(tmp_path: Path, monkeypatch):
