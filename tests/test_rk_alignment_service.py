@@ -154,6 +154,60 @@ def test_build_alignment_batch_state_blocks_unknown_historical_rk_value(tmp_path
     assert "row 3 has RK_raw=99 but no valid RK candidate matches it" in state.blocked_messages
 
 
+def test_build_alignment_batch_state_keeps_unknown_historical_rk_row_actionable(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4)]
+    candidates = [_make_candidate(tmp_path, "31")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "99", 4: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    assert "row 3 has RK_raw=99 but no valid RK candidate matches it" in state.blocked_messages
+    assert [case.manifest.row_index for case in state.aligned_cases] == [3]
+    assert state.aligned_cases[0].rk_raw_value == "99"
+    assert state.aligned_cases[0].selected_candidate_index == -1
+    assert state.aligned_cases[0].status == "blocked_aligned"
+    assert [case.manifest.row_index for case in state.pending_cases] == [4]
+
+
+def test_clear_rewrite_path_for_blocked_historical_row_recomputes_without_crashing(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4)]
+    candidates = [_make_candidate(tmp_path, "31")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "99", 4: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+
+    rewrite_state = enable_rewrite_rows(state, [3])
+    cleared = clear_alignment(rewrite_state, row_index=3)
+
+    assert 3 in cleared.rewrite_row_indices
+    assert [case.manifest.row_index for case in cleared.pending_cases] == [3, 4]
+    assert cleared.pending_cases[0].status == "rewrite_pending"
+
+
+def test_confirm_alignment_rejects_candidate_not_strictly_after_earlier_confirmed_rows(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4)]
+    candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "", 4: ""},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    state = confirm_alignment(state, row_index=3, candidate_name="31")
+
+    with pytest.raises(ValueError, match="not strictly after earlier confirmed rows"):
+        confirm_alignment(state, row_index=4, candidate_name="31")
+
+
 def test_confirm_clear_and_rewrite_guard_recompute_consumption_monotonically(tmp_path: Path):
     manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
     candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33")]
@@ -183,6 +237,22 @@ def test_confirm_clear_and_rewrite_guard_recompute_consumption_monotonically(tmp
     assert [case.manifest.row_index for case in cleared.pending_cases] == [4]
     assert cleared.pending_cases[0].rk_raw_value == ""
     assert cleared.pending_cases[0].selected_candidate_index == 1
+
+
+def test_rewrite_of_middle_row_cannot_move_backward_relative_to_earlier_confirmed_rows(tmp_path: Path):
+    manifests = [_make_manifest(tmp_path, row_index) for row_index in (3, 4, 5)]
+    candidates = [_make_candidate(tmp_path, folder_name) for folder_name in ("31", "32", "33")]
+
+    state = build_alignment_batch_state(
+        manifests=manifests,
+        rk_raw_by_row={3: "31", 4: "32", 5: "33"},
+        candidates=candidates,
+        bad_directory_logs=[],
+    )
+    rewrite_state = enable_rewrite_rows(state, [4])
+
+    with pytest.raises(ValueError, match="not strictly after earlier confirmed rows"):
+        confirm_alignment(rewrite_state, row_index=4, candidate_name="31")
 
 
 def test_clear_then_reconfirm_keeps_rewrite_mode_and_guard(tmp_path: Path):

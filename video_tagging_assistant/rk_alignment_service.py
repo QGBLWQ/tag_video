@@ -81,21 +81,7 @@ def confirm_alignment(state: AlignmentBatchState, row_index: int, candidate_name
     if candidate_index is None:
         raise ValueError(f"RK candidate {candidate_name} does not exist")
     _manifest_by_row(state.manifests, row_index)
-
-    if row_index in state.rewrite_row_indices:
-        for later_manifest in sorted(state.manifests, key=lambda manifest: manifest.row_index):
-            if later_manifest.row_index <= row_index:
-                continue
-            later_value = _normalize_rk_raw(state.rk_raw_by_row.get(later_manifest.row_index, ""))
-            if not later_value:
-                continue
-            later_candidate_index = candidate_indices.get(later_value)
-            if later_candidate_index is not None and later_candidate_index <= candidate_index:
-                raise ValueError(
-                    f"row {row_index} cannot be rewritten to RK {candidate_name} because later confirmed rows "
-                    f"would no longer be strictly increasing"
-                )
-
+    _validate_confirm_alignment(state, row_index, candidate_name, candidate_index, candidate_indices)
     updated_rk_raw = dict(state.rk_raw_by_row)
     updated_rk_raw[row_index] = candidate_name
     updated_rewrite_rows = set(state.rewrite_row_indices)
@@ -205,6 +191,15 @@ def _recompute_state(
                 blocked_messages.append(
                     f"row {row_index} has RK_raw={rk_raw_value} but no valid RK candidate matches it"
                 )
+                manifest.raw_path = Path(rk_raw_value)
+                aligned_cases.append(
+                    AlignmentViewCase(
+                        manifest=manifest,
+                        rk_raw_value=rk_raw_value,
+                        selected_candidate_index=-1,
+                        status="blocked_aligned",
+                    )
+                )
                 continue
             if candidate_index < cursor:
                 blocked_messages.append(
@@ -256,6 +251,60 @@ def _candidate_sort_key(candidate: RkCandidate) -> tuple[int, int, str]:
 
 def _candidate_index_by_name(candidates: Sequence[RkCandidate]) -> Dict[str, int]:
     return {candidate.folder_name: index for index, candidate in enumerate(candidates)}
+
+
+def _validate_confirm_alignment(
+    state: AlignmentBatchState,
+    row_index: int,
+    candidate_name: str,
+    candidate_index: int,
+    candidate_indices: Mapping[str, int],
+) -> None:
+    earlier_index, later_index = _confirmed_neighbor_bounds(state, row_index, candidate_indices)
+    if earlier_index is not None and candidate_index <= earlier_index:
+        raise ValueError(
+            f"row {row_index} cannot be {_confirm_verb(state, row_index)} to RK {candidate_name} "
+            f"because it is not strictly after earlier confirmed rows"
+        )
+    if later_index is not None and candidate_index >= later_index:
+        raise ValueError(
+            f"row {row_index} cannot be {_confirm_verb(state, row_index)} to RK {candidate_name} "
+            f"because later confirmed rows would no longer be strictly increasing"
+        )
+
+
+def _confirmed_neighbor_bounds(
+    state: AlignmentBatchState,
+    row_index: int,
+    candidate_indices: Mapping[str, int],
+) -> Tuple[int | None, int | None]:
+    earlier_index = None
+    later_index = None
+    ordered_manifests = sorted(state.manifests, key=lambda manifest: manifest.row_index)
+
+    for manifest in ordered_manifests:
+        current_row_index = manifest.row_index
+        if current_row_index == row_index:
+            continue
+        rk_raw_value = _normalize_rk_raw(state.rk_raw_by_row.get(current_row_index, ""))
+        if not rk_raw_value:
+            continue
+        current_candidate_index = candidate_indices.get(rk_raw_value)
+        if current_candidate_index is None:
+            continue
+        if current_row_index < row_index:
+            earlier_index = current_candidate_index
+            continue
+        later_index = current_candidate_index
+        break
+
+    return earlier_index, later_index
+
+
+def _confirm_verb(state: AlignmentBatchState, row_index: int) -> str:
+    if row_index in state.rewrite_row_indices:
+        return "rewritten"
+    return "confirmed"
 
 
 def _manifest_by_row(manifests: Sequence[CaseManifest], row_index: int) -> CaseManifest:
