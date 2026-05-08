@@ -150,11 +150,46 @@ def test_main_window_has_four_tabs():
     assert window._tabs.widget(3) is window._execution_tab
 
 
+def test_main_window_uses_readable_chinese_tab_labels():
+    window = _make_window()
+    assert [window._tabs.tabText(i) for i in range(window._tabs.count())] == [
+        "打标",
+        "对齐",
+        "审核",
+        "执行队列",
+    ]
+
+
 def test_alignment_review_and_execution_tabs_initially_disabled():
     window = _make_window()
     assert not window._tabs.isTabEnabled(1)
     assert not window._tabs.isTabEnabled(2)
     assert not window._tabs.isTabEnabled(3)
+
+
+def test_batch_load_reads_rk_raw_from_get_list_sheet(tmp_path):
+    window = _make_window()
+    manifest = _make_manifest("case_A_0078", row_index=3)
+    workbook_path = tmp_path / "records.xlsx"
+    workbook_path.write_text("", encoding="utf-8")
+    fake_state = MagicMock()
+
+    with patch("video_tagging_assistant.gui.main_window.load_rk_raw_values", return_value={}) as mock_load_rk_raw, patch(
+        "video_tagging_assistant.gui.main_window.scan_rk_candidates",
+        return_value=(Path("/tmp/rk"), [], []),
+    ), patch(
+        "video_tagging_assistant.gui.main_window.build_alignment_batch_state",
+        return_value=fake_state,
+    ):
+        window._on_batch_loaded(
+            {
+                "manifests": [manifest],
+                "source_workbook": workbook_path,
+                "writeback_workbook": workbook_path,
+            }
+        )
+
+    mock_load_rk_raw.assert_called_once_with(workbook_path, source_sheet="获取列表")
 
 
 def test_main_window_keeps_review_locked_until_alignment_and_tagging_finish(tmp_path):

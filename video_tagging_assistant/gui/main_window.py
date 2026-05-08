@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._tagging_tab, "打标")
-        self._tabs.addTab(self._alignment_tab, "瀵归綈")
+        self._tabs.addTab(self._alignment_tab, "\u5bf9\u9f50")
         self._tabs.addTab(self._review_tab, "审核")
         self._tabs.addTab(self._execution_tab, "执行队列")
         self._tabs.setTabEnabled(1, False)
@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         self._enqueued_case_ids = set()
 
         try:
-            rk_raw_by_row = load_rk_raw_values(self._workbook_path, source_sheet="鑾峰彇鍒楄〃")
+            rk_raw_by_row = load_rk_raw_values(self._workbook_path, source_sheet="\u83b7\u53d6\u5217\u8868")
             _, candidates, bad_logs = scan_rk_candidates(
                 temp_root=str(self._config.get("temp_path", "")),
                 dut_root=str(self._config.get("dut_root", "")),
