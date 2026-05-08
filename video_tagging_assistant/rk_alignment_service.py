@@ -245,8 +245,6 @@ def _pull_remote_preview(adb_exe: str, root_value: str, folder_name: str, previe
     cache_dir = _remote_preview_cache_dir(root_value, folder_name)
     cache_dir.mkdir(parents=True, exist_ok=True)
     local_preview_path = cache_dir / preview_name
-    if local_preview_path.exists():
-        return local_preview_path
 
     remote_preview_path = f"{root_value}/{folder_name}/{preview_name}"
     subprocess.run(

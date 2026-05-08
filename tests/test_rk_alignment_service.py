@@ -326,15 +326,19 @@ def test_scan_rk_candidates_uses_root_namespaced_remote_preview_cache(tmp_path: 
     monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fake_run)
 
     _, candidates_a, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataA", adb_exe="adb.exe")
-    _, candidates_b, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataB", adb_exe="adb.exe")
-
     preview_a = candidates_a[0].preview_path
+    preview_a.write_bytes(b"stale")
+    _, candidates_b, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataB", adb_exe="adb.exe")
+    _, candidates_a_refreshed, _ = scan_rk_candidates("", "/mnt/nvme/CapturedDataA", adb_exe="adb.exe")
+
     preview_b = candidates_b[0].preview_path
+    refreshed_preview_a = candidates_a_refreshed[0].preview_path
 
     assert preview_a != preview_b
     assert preview_a.parent.parent != preview_b.parent.parent
-    assert preview_a.read_bytes() == b"A"
+    assert refreshed_preview_a.read_bytes() == b"A"
     assert preview_b.read_bytes() == b"B"
+    assert preview_a.read_bytes() == b"A"
     assert any(command[:2] == ["adb.exe", "pull"] for command in calls)
 
 
