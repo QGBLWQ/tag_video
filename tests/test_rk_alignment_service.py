@@ -355,21 +355,65 @@ def test_scan_rk_candidates_skips_empty_temp_root_string_and_uses_dut_root(tmp_p
     assert bad_logs == []
 
 
-def test_scan_rk_candidates_does_not_adb_scan_missing_local_looking_dut_root(tmp_path: Path, monkeypatch):
+def test_scan_rk_candidates_missing_local_looking_dut_root_uses_adb(tmp_path: Path, monkeypatch):
     temp_root = tmp_path / "temp_root"
     temp_root.mkdir()
     dut_root = Path("C:/capturedData")
+    calls = []
 
-    def _fail_run(*args, **kwargs):
-        raise AssertionError("adb should not be invoked for a missing local-looking dut_root")
+    def _normalize(command_path: str) -> str:
+        return command_path.replace("\\", "/")
 
-    monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fail_run)
+    def _fake_run(command, capture_output=False, text=False, encoding=None, errors=None, timeout=None, check=False):
+        calls.append(command)
+        if command[:3] == ["adb.exe", "shell", "find"] and _normalize(command[3]) == "C:/capturedData" and command[4:] == [
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "d",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="C:/capturedData/31\n", stderr="")
+        if command[:3] == ["adb.exe", "shell", "find"] and _normalize(command[3]) == "C:/capturedData/31" and command[4:] == [
+            "-mindepth",
+            "1",
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-print",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="C:/capturedData/31/preview.jpg\n", stderr="")
+        if command[:2] == ["adb.exe", "pull"]:
+            local_preview = Path(command[3])
+            local_preview.parent.mkdir(parents=True, exist_ok=True)
+            local_preview.write_bytes(b"jpeg")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("video_tagging_assistant.rk_alignment_service.subprocess.run", _fake_run)
 
     source_root, candidates, bad_logs = scan_rk_candidates(str(temp_root), str(dut_root), adb_exe="adb.exe")
 
     assert source_root == dut_root
-    assert candidates == []
-    assert bad_logs == ["RK scan root C:\\capturedData: found 0 numeric directories, 0 valid RK candidates"]
+    assert [candidate.folder_name for candidate in candidates] == ["31"]
+    assert candidates[0].preview_path.exists()
+    assert any("found 1 numeric directories, 1 valid RK candidates" in log for log in bad_logs)
+    assert [
+        "adb.exe",
+        "shell",
+        "find",
+        str(dut_root),
+        "-mindepth",
+        "1",
+        "-maxdepth",
+        "1",
+        "-type",
+        "d",
+        "-print",
+    ] in calls
 
 
 def test_scan_rk_candidates_does_not_scan_cwd_when_dut_root_is_blank(tmp_path: Path, monkeypatch):

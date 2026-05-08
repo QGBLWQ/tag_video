@@ -47,7 +47,7 @@ def scan_rk_candidates(temp_root: str, dut_root: str, adb_exe: str = "adb") -> T
     temp_path = _optional_root_path(temp_root)
     dut_path = _optional_root_path(dut_root)
     normalized_dut_root = str(dut_root or "").strip()
-    dut_is_remote = _is_remote_dut_root(normalized_dut_root)
+    dut_is_remote = dut_path is not None and normalized_dut_root and (not dut_path.exists() or not dut_path.is_dir())
 
     temp_candidates, temp_logs = _scan_candidate_root(temp_path)
     if temp_candidates:
@@ -277,11 +277,6 @@ def _matched_candidate_directory_count(root: object) -> int:
 def _empty_candidate_summary(root: object) -> str:
     matched_directory_count = _matched_candidate_directory_count(root)
     return f"RK scan root {root}: found {matched_directory_count} numeric directories, 0 valid RK candidates"
-
-
-def _is_remote_dut_root(root_value: str) -> bool:
-    normalized = _normalize_remote_root(root_value)
-    return bool(normalized) and normalized.startswith("/")
 
 
 def _normalize_remote_root(root_value: str) -> str:
