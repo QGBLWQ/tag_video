@@ -11,9 +11,61 @@ from pathlib import Path
 from queue import Queue
 from typing import Callable, Iterable
 
+_ADB_ERROR_MAP = {
+    "device not found": "设备未连接，请检查 USB 线缆并确认 adb devices 可见",
+    "no devices": "设备未连接，请检查 USB 线缆并确认 adb devices 可见",
+    "permission denied": "权限不足，请在设备端执行 adb root",
+    "no such file or directory": "远端路径不存在，请检查 dut_root 配置和 RK 目录名",
+    "timeout": "设备响应超时，请重启 adb server（adb kill-server）",
+    "timed out": "设备响应超时，请重启 adb server（adb kill-server）",
+    "offline": "设备离线，请重新插拔 USB 并等待设备上线",
+}
+
+
+def _translate_adb_error(error: subprocess.CalledProcessError) -> str:
+    stderr = (error.stderr or "").lower()
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    for keyword, chinese in _ADB_ERROR_MAP.items():
+        if keyword in stderr:
+            return f"{chinese}（原始错误: {stderr.strip()}）"
+    return f"adb 命令失败: {stderr.strip() or str(error)}"
+
+
+def _adb_list_files(adb_exe: str, remote_dir: str, timeout: int = 30) -> dict:
+    """通过 adb shell ls -la 获取远端目录文件列表，返回 {filename: size_bytes}。"""
+    result = subprocess.run(
+        [adb_exe, "shell", "ls", "-la", remote_dir],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, [adb_exe, "shell", "ls", "-la", remote_dir],
+            output=result.stdout, stderr=result.stderr,
+        )
+    files = {}
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("total ") or line.startswith("d"):
+            continue
+        # ls -la 输出: -rw-rw-rw- 1 root root  12345678 2025-04-29 10:00 filename
+        parts = line.split()
+        if len(parts) >= 5:
+            try:
+                size = int(parts[4])
+            except ValueError:
+                continue
+            name = parts[-1]
+            if name not in (".", ".."):
+                files[name] = size
+    return files
+
 from video_tagging_assistant.copy_worker import copy_declared_files
 from video_tagging_assistant.pull_worker import (
-    consume_temp_pull_source,
     run_resumable_pull,
     wait_for_device,
 )
@@ -134,26 +186,39 @@ def run_case_ingest(
 
 
 def pull_case(manifest, config: dict) -> None:
-    """把单个 case 的 RK 数据拉到本地临时目录。
-
-    若 `temp_path` 中存在同名 RK 目录，则优先消费式 move 到目标位置，
-    否则回退到 adb pull。
-    """
+    """增量 pull：对比远端文件列表与本地已有文件，只拉缺失或大小不同的。"""
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
-    temp_path = str(config.get("temp_path") or "").strip()
-    if temp_path:
-        temp_root = Path(temp_path)
-        if temp_root.exists() and consume_temp_pull_source(temp_root, rk_suffix, dest):
-            return
-
     dest.mkdir(parents=True, exist_ok=True)
-    remote_path = f"{config['dut_root']}/{rk_suffix}/."
-    subprocess.run(
-        [config["adb_exe"], "pull", remote_path, str(dest)],
-        check=True,
-        timeout=int(config.get("adb_pull_timeout", 600)),
-    )
+    remote_dir = f"{config['dut_root']}/{rk_suffix}"
+    adb_exe = config["adb_exe"]
+    timeout = int(config.get("adb_pull_timeout", 600))
+
+    try:
+        remote_files = _adb_list_files(adb_exe, remote_dir)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(_translate_adb_error(exc)) from exc
+
+    to_pull = {}
+    for name, size in remote_files.items():
+        local_file = dest / name
+        if local_file.exists() and local_file.stat().st_size == size:
+            continue
+        to_pull[name] = size
+
+    if not to_pull:
+        return  # all files already present
+
+    for name in to_pull:
+        remote_path = f"{remote_dir}/{name}"
+        try:
+            subprocess.run(
+                [adb_exe, "pull", remote_path, str(dest / name)],
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(_translate_adb_error(exc)) from exc
 
 
 def move_case(manifest, config: dict) -> None:
