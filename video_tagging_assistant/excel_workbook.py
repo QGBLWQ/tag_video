@@ -105,17 +105,18 @@ def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]
     workbook = load_workbook(workbook_path, data_only=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
-    if "RK_raw" not in headers:
-        raise ValueError("获取列表 缺少 RK_raw 表头")
+    missing = GET_LIST_REQUIRED_HEADERS - set(headers)
+    if missing:
+        raise ValueError(f"获取列表 缺少必要表头: {sorted(missing)}")
 
     values: Dict[int, str] = {}
     rk_col = headers["RK_raw"]
-    normal_col = headers.get("Action5Pro_Nomal")
-    night_col = headers.get("Action5Pro_Night")
+    normal_col = headers["Action5Pro_Nomal"]
+    night_col = headers["Action5Pro_Night"]
 
     for row_index in range(3, sheet.max_row + 1):
-        normal = str(sheet.cell(row_index, normal_col).value or "").strip() if normal_col else ""
-        night = str(sheet.cell(row_index, night_col).value or "").strip() if night_col else ""
+        normal = str(sheet.cell(row_index, normal_col).value or "").strip()
+        night = str(sheet.cell(row_index, night_col).value or "").strip()
         if not normal and not night:
             continue
         values[row_index] = str(sheet.cell(row_index, rk_col).value or "").strip()

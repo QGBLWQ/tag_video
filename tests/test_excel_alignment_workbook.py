@@ -20,6 +20,17 @@ def _build_get_list_workbook(path: Path) -> None:
     ws.append(["R", "", "DJI_0001.MP4", "DJI_0101.MP4"])
     ws.append(["R", "32", "DJI_0002.MP4", "DJI_0102.MP4"])
     ws.append(["R", "32x", "DJI_0003.MP4", "DJI_0103.MP4"])
+    ws.append(["R", "unused", "", ""])
+    wb.save(path)
+
+
+def _build_get_list_workbook_missing_night_header(path: Path) -> None:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "获取列表"
+    ws.append(["日期", "20260508", "", ""])
+    ws.append(["处理状态", "RK_raw", "Action5Pro_Nomal"])
+    ws.append(["R", "", "DJI_0001.MP4"])
     wb.save(path)
 
 
@@ -32,6 +43,23 @@ def test_load_rk_raw_values_returns_rows_with_dji_values(tmp_path: Path):
         4: "32",
         5: "32x",
     }
+
+
+def test_load_rk_raw_values_excludes_rows_with_blank_dji_values(tmp_path: Path):
+    workbook_path = tmp_path / "alignment.xlsx"
+    _build_get_list_workbook(workbook_path)
+
+    values = load_rk_raw_values(workbook_path, source_sheet="获取列表")
+
+    assert 6 not in values
+
+
+def test_load_rk_raw_values_raises_when_required_dji_header_is_missing(tmp_path: Path):
+    workbook_path = tmp_path / "alignment.xlsx"
+    _build_get_list_workbook_missing_night_header(workbook_path)
+
+    with pytest.raises(ValueError):
+        load_rk_raw_values(workbook_path, source_sheet="获取列表")
 
 
 def test_load_aligned_rk_raw_rows_returns_only_non_empty_rk_raw_rows(tmp_path: Path):
