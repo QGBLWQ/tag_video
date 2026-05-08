@@ -84,7 +84,7 @@ def _extract_raw_suffix(raw_path: str) -> str:
 
 def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListRow]:
     """把「获取列表」逐行解析成 `GetListRow` 列表。"""
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
     created_date = str(sheet.cell(1, 2).value or "").strip()
     headers = _header_map_for_row(sheet, 2)
@@ -113,7 +113,7 @@ def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListR
 
 def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
     """读取「获取列表」中每个有效视频行对应的 RK_raw 值。"""
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
     missing = GET_LIST_REQUIRED_HEADERS - set(headers)
@@ -159,17 +159,6 @@ def clear_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int) -
     write_rk_raw_value(workbook_path, source_sheet, row_index, "")
 
 
-def mark_row_processed(workbook_path: Path, source_sheet: str, row_index: int) -> None:
-    """将「获取列表」指定行的 处理状态 标记为 R（已处理）。"""
-    workbook = load_workbook(workbook_path, keep_vba=True)
-    sheet = workbook[source_sheet]
-    headers = _header_map_for_row(sheet, 2)
-    if "处理状态" not in headers:
-        raise ValueError("获取列表 缺少 处理状态 表头")
-    sheet.cell(row_index, headers["处理状态"]).value = "R"
-    workbook.save(workbook_path)
-
-
 def _match_create_record_rows(create_record_rows: List[ExcelCaseRecord], get_list_row: GetListRow) -> ExcelCaseRecord:
     """用 RK_raw + DJI 文件名三元组匹配「创建记录」中的唯一行。"""
     matches = [
@@ -208,7 +197,7 @@ def ensure_pipeline_columns(workbook_path: Path, source_sheet: str) -> None:
 
 def _load_create_record_rows(workbook_path: Path, source_sheet: str) -> List[ExcelCaseRecord]:
     """把「创建记录」解析成 `ExcelCaseRecord` 列表。"""
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
     rows: List[ExcelCaseRecord] = []
@@ -237,7 +226,7 @@ def _load_create_record_rows(workbook_path: Path, source_sheet: str) -> List[Exc
 
 def load_pipeline_cases(workbook_path: Path, source_sheet: str, allowed_statuses: Set[str]) -> List[ExcelCaseRecord]:
     """从指定 sheet 中读取允许状态的 case 行。"""
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
     rows: List[ExcelCaseRecord] = []
@@ -330,7 +319,7 @@ def get_next_case_sequence(workbook_path: Path, pc_id: str) -> int:
     """
     if not workbook_path.exists():
         return 1
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     if "创建记录" not in workbook.sheetnames:
         return 1
     sheet = workbook["创建记录"]
@@ -367,7 +356,7 @@ def load_get_list_manifests(
     这个入口不依赖「创建记录」存在，主要供打标页预先生成 case_id
     并在审核通过后再回填「创建记录」时使用。
     """
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
     created_date = str(sheet.cell(1, 2).value or "").strip()
     headers = _header_map_for_row(sheet, 2)
@@ -378,6 +367,9 @@ def load_get_list_manifests(
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
     for row_index in range(3, sheet.max_row + 1):
+        status = str(sheet.cell(row_index, headers.get("处理状态", 0)).value or "").strip()
+        if status == "R":
+            continue
         rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
         normal = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
         night = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
@@ -410,7 +402,7 @@ def load_confirmed_cases(
     status_column: str,
 ) -> List[ConfirmedCaseRow]:
     """读取指定 sheet 中已存在的 case 行，用于旧审核/同步流程。"""
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map(sheet)
 
@@ -480,7 +472,7 @@ def upsert_review_rows(workbook_path: Path, review_sheet: str, rows: List[Review
 
 def load_approved_review_rows(workbook_path: Path, review_sheet: str) -> List[Dict[str, str]]:
     """读取审核结果中已通过的记录，供后续同步或执行。"""
-    workbook = load_workbook(workbook_path)
+    workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[review_sheet]
     headers = _header_map(sheet)
     rows: List[Dict[str, str]] = []
@@ -555,7 +547,7 @@ _CREATE_RECORD_HEADERS = [
 
 def load_dut_info(workbook_path: Path) -> List[Dict[str, str]]:
     """读取 `Dut_info` 设备清单，并把默认设备放到列表首位。"""
-    workbook = load_workbook(workbook_path, data_only=True)
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     if "Dut_info" not in workbook.sheetnames:
         return []
     sheet = workbook["Dut_info"]
@@ -695,3 +687,15 @@ def write_case_txt(manifest: "CaseManifest", tag_result: TagResult) -> Path:
     with open(out_path, "w", encoding="gbk", errors="replace") as f:
         f.write("\n".join(lines))
     return out_path
+
+
+def mark_row_processed(workbook_path: Path, source_sheet: str, row_index: int) -> None:
+    """将指定行的处理状态标记为 R（已完成）。"""
+    workbook = load_workbook(workbook_path, keep_vba=True)
+    sheet = workbook[source_sheet]
+    headers = _header_map(sheet)
+    status_col = headers.get("处理状态")
+    if status_col is None:
+        raise ValueError(f'{source_sheet} 缺少“处理状态”列')
+    sheet.cell(row=row_index, column=status_col).value = "R"
+    workbook.save(workbook_path)
