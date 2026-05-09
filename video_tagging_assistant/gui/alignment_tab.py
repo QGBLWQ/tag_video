@@ -484,7 +484,7 @@ class AlignmentTab(QWidget):
         self._preview_worker = None
         worker.stop()
         if not worker.wait(2000):
-            worker.wait()
+            worker.wait(3000)
 
     def _on_preview_result(self, generation: int, payload: dict) -> None:
         if generation != self._preview_generation:

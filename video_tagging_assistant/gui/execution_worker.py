@@ -95,16 +95,17 @@ class ExecutionWorker(QThread):
                         self.upload_progress.emit(cid, current, total, filename)
 
                 upload_case(manifest, self._config, progress_cb=_cb)
+                # 先标记 R，再通知完成
+                try:
+                    from video_tagging_assistant.excel_workbook import mark_row_processed
+                    workbook_path = Path(self._config.get("workbook_path", ""))
+                    if workbook_path.exists():
+                        mark_row_processed(workbook_path, "获取列表", manifest.row_index)
+                except Exception as exc:
+                    self.status_changed.emit(manifest.case_id, "upload", "completed", f"标记R失败: {exc}")
+                    continue
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "completed", "")
-                    # 标记处理状态为 R
-                    try:
-                        from video_tagging_assistant.excel_workbook import mark_row_processed
-                        workbook_path = Path(self._config.get("workbook_path", ""))
-                        if workbook_path.exists():
-                            mark_row_processed(workbook_path, "获取列表", manifest.row_index)
-                    except Exception:
-                        pass  # 标记失败不影响主流程
             except Exception as exc:
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "failed", str(exc))
