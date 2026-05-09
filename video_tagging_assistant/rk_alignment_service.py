@@ -230,6 +230,13 @@ def _scan_remote_candidate_root(root_value: str, adb_exe: str) -> Tuple[list[RkC
 
     for folder_name in matched_directory_names:
         has_x_suffix = folder_name.endswith("x")
+        # 统计远端目录内文件数
+        file_count = 0
+        try:
+            file_entries = _adb_find(adb_exe, f"{root_value}/{folder_name}", ["-mindepth", "1", "-maxdepth", "1", "-type", "f", "-print"])
+            file_count = len(file_entries)
+        except Exception:
+            pass
         candidates.append(
             RkCandidate(
                 folder_name=folder_name,
@@ -237,6 +244,7 @@ def _scan_remote_candidate_root(root_value: str, adb_exe: str) -> Tuple[list[RkC
                 numeric_value=int(_strip_x_suffix(folder_name)),
                 has_x_suffix=has_x_suffix,
                 preview_path=None,
+                file_count=file_count,
             )
         )
 
