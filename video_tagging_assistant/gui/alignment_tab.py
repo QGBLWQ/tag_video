@@ -47,6 +47,8 @@ class AlignmentTab(QWidget):
         self._candidate_overrides = {}
         self._preview_results_by_row = {}
         self._rk_preview_paths = {}
+        self._pixmap_cache: dict = {}   # row_index -> [(filename, QIcon), ...]
+        self._preload_limit = 10
         self._preview_worker = None
         self._preview_generation = 0
         self._runtime_logs = []
@@ -126,6 +128,8 @@ class AlignmentTab(QWidget):
             for manifest in self._manifests
         }
         self._rk_preview_paths = {}
+        self._pixmap_cache = {}
+        self._preload_limit = int(self._config.get("alignment_preload_cases", 10))
         self._runtime_logs = []
         self._render()
         self._start_preview_worker()
@@ -266,8 +270,8 @@ class AlignmentTab(QWidget):
         status = preview_result.get("status", "pending")
 
         if status == "prepared":
-            self._populate_preview_list(self._normal_preview_list, preview_result.get("normal_frames", []))
-            self._populate_preview_list(self._night_preview_list, preview_result.get("night_frames", []))
+            self._populate_preview_list(self._normal_preview_list, preview_result.get("normal_frames", []), case)
+            self._populate_preview_list(self._night_preview_list, preview_result.get("night_frames", []), case)
             return True
 
         self._normal_preview_list.clear()
@@ -279,18 +283,48 @@ class AlignmentTab(QWidget):
             self._rk_preview_label.setText(f"{case.manifest.case_id} \u9884\u89c8\u51c6\u5907\u4e2d...")
         return False
 
-    def _populate_preview_list(self, widget: QListWidget, frames) -> None:
-        widget.clear()
-        for frame in frames:
-            frame_path = Path(frame)
-            item = QListWidgetItem()
-            item.setText(frame_path.name)
-            item.setData(Qt.UserRole, str(frame_path))
-            pixmap = QPixmap(str(frame_path))
+    def _load_pixmaps_into_cache(self, row_index: int, payload: dict) -> None:
+        """将抽帧结果预加载为缩略图存入缓存。"""
+        icons = []
+        for frame in payload.get("normal_frames", []) + payload.get("night_frames", []):
+            frame_path = str(frame)
+            name = Path(frame).name
+            pixmap = QPixmap(frame_path)
             if not pixmap.isNull():
                 icon = QIcon()
                 icon.addPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                item.setIcon(icon)
+                icons.append((name, icon, frame_path))
+            else:
+                icons.append((name, QIcon(), frame_path))
+        self._pixmap_cache[row_index] = icons
+
+    def _populate_preview_list(self, widget: QListWidget, frames, case) -> None:
+        widget.clear()
+        row = case.manifest.row_index
+        # 已缓存则直接取；否则加载后缓存
+        if row not in self._pixmap_cache:
+            icons = []
+            for frame in frames:
+                frame_path = str(frame)
+                name = Path(frame).name
+                pixmap = QPixmap(frame_path)
+                if not pixmap.isNull():
+                    icon = QIcon()
+                    icon.addPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    icons.append((name, icon, frame_path))
+                else:
+                    icons.append((name, QIcon(), frame_path))
+            self._pixmap_cache[row] = icons
+            # 缓存超限时踢出最早的
+            while len(self._pixmap_cache) > self._preload_limit:
+                oldest = next(iter(self._pixmap_cache))
+                self._pixmap_cache.pop(oldest, None)
+
+        for name, icon, frame_path in self._pixmap_cache[row]:
+            item = QListWidgetItem()
+            item.setText(name)
+            item.setData(Qt.UserRole, frame_path)
+            item.setIcon(icon)
             widget.addItem(item)
 
     def _on_preview_double_clicked(self, item: QListWidgetItem) -> None:
@@ -420,6 +454,7 @@ class AlignmentTab(QWidget):
             return
 
         self._candidate_overrides.pop(case.manifest.row_index, None)
+        self._pixmap_cache.pop(case.manifest.row_index, None)  # 释放已确认 case 的缓存
         self._append_log(f"{case.manifest.case_id} aligned to RK {candidate.folder_name}")
         self._render()
 
@@ -497,6 +532,10 @@ class AlignmentTab(QWidget):
         self._preview_results_by_row[row_index] = dict(payload)
         if payload.get("status") == "failed":
             self._append_preview_failure_logs(payload)
+        # 预加载：抽帧完成且缓存未满时载入内存
+        if payload.get("status") == "prepared" and row_index not in self._pixmap_cache:
+            if len(self._pixmap_cache) < self._preload_limit:
+                self._load_pixmaps_into_cache(row_index, payload)
         current_case = self._current_case()
         if current_case is not None and current_case.manifest.row_index == row_index:
             self._show_case_by_index(self._queue_list.currentRow())
