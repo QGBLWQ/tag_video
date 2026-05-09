@@ -154,6 +154,7 @@ class TaggingTab(QWidget):
 
     tagging_complete = pyqtSignal(list)
     batch_loaded = pyqtSignal(object)
+    auto_exec_requested = pyqtSignal()
 
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
@@ -354,6 +355,8 @@ class TaggingTab(QWidget):
         self._error_list.clear()
         if not self._validate_start():
             return
+        if self.auto_execution_enabled():
+            self.auto_exec_requested.emit()
         self._progress_bar.setMaximum(len(self._manifests))
         self._progress_bar.setValue(0)
         self._log_panel.clear()

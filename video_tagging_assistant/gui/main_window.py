@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
 
         self._tagging_tab.batch_loaded.connect(self._on_batch_loaded)
         self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
+        self._tagging_tab.auto_exec_requested.connect(self._on_auto_exec_requested)
         self._alignment_tab.alignment_state_changed.connect(self._on_alignment_state_changed)
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
@@ -210,8 +211,19 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("请先完成全部 case 对齐后再开启自动执行", 5000)
         return bool(self._alignment_ready)
 
+    def _on_auto_exec_requested(self) -> None:
+        """全自动模式：打标开始时立即入队（与打标并行执行 pull+upload）。"""
+        device_info = self._tagging_tab.selected_device_info()
+        locked_device = device_info if isinstance(device_info, dict) else None
+        for manifest in self._loaded_manifests:
+            self._apply_device_info_to_manifest(manifest, locked_device)
+            if manifest.case_id not in self._enqueued_case_ids:
+                self._tabs.setTabEnabled(3, True)
+                self._execution_tab.add_case(deepcopy(manifest))
+                self._enqueued_case_ids.add(manifest.case_id)
+
     def _on_tagging_complete(self, results: list) -> None:
-        """保存打标结果与模式选择，自动执行模式下立即入队。"""
+        """保存打标结果与模式选择，等待进入审核阶段。"""
         self._workbook_path = self._tagging_tab._writeback_path or Path(self._tagging_tab._workbook_edit.text().strip())
 
         self._auto_execution_enabled = self._tagging_tab.auto_execution_enabled()
@@ -220,17 +232,6 @@ class MainWindow(QMainWindow):
 
         self._pending_tagging_results = list(results)
         self._tagging_finished = True
-
-        # 全自动模式：对齐已完成 → 所有 case 立即入队 pull+upload
-        if self._auto_execution_enabled and self._alignment_ready:
-            for result in results:
-                manifest = result["manifest"]
-                self._apply_device_info_to_manifest(manifest, self._locked_device_info)
-                if manifest.case_id not in self._enqueued_case_ids:
-                    self._tabs.setTabEnabled(3, True)
-                    self._execution_tab.add_case(deepcopy(manifest))
-                    self._enqueued_case_ids.add(manifest.case_id)
-
         self._maybe_enter_review()
 
     def _maybe_enter_review(self) -> None:
