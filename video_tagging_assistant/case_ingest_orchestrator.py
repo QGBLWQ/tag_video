@@ -321,7 +321,9 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
     workers = int(config.get("upload_workers", 8))
     src = local_root / mode / manifest.created_date / manifest.case_id
     dest = server_root / mode / manifest.created_date / manifest.case_id
-    if dest.exists() and any(f.is_file() for f in dest.rglob("*")):
-        return  # already uploaded
+    # 只检查 RK 数据是否已存在（txt 可能先到但不算已完成）
+    rk_subdir = dest / f"{manifest.case_id}_RK_raw_{manifest.raw_path.name}"
+    if rk_subdir.exists() and any(rk_subdir.iterdir()):
+        return  # RK data already uploaded
     dest.parent.mkdir(parents=True, exist_ok=True)
     _copytree_with_progress(src, dest, progress_cb, workers=workers)
