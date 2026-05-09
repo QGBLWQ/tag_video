@@ -297,6 +297,21 @@ class AlignmentTab(QWidget):
             else:
                 icons.append((name, QIcon(), frame_path))
         self._pixmap_cache[row_index] = icons
+        self._evict_cache()
+
+    def _evict_cache(self) -> None:
+        """缓存超限时踢出最早插入的非当前 case。"""
+        current_row = None
+        case = self._current_case()
+        if case is not None:
+            current_row = case.manifest.row_index
+        while len(self._pixmap_cache) > self._preload_limit:
+            for key in list(self._pixmap_cache):
+                if key != current_row:
+                    self._pixmap_cache.pop(key, None)
+                    break
+            else:
+                break  # 全是当前 case，无法再踢
 
     def _populate_preview_list(self, widget: QListWidget, frames, case) -> None:
         widget.clear()
@@ -315,10 +330,7 @@ class AlignmentTab(QWidget):
                 else:
                     icons.append((name, QIcon(), frame_path))
             self._pixmap_cache[row] = icons
-            # 缓存超限时踢出最早的
-            while len(self._pixmap_cache) > self._preload_limit:
-                oldest = next(iter(self._pixmap_cache))
-                self._pixmap_cache.pop(oldest, None)
+            self._evict_cache()
 
         for name, icon, frame_path in self._pixmap_cache[row]:
             item = QListWidgetItem()
