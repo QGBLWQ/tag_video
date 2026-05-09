@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         self._execution_tab = ExecutionTab(self._worker)
 
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._tagging_tab, "打标")
+        self._tabs.addTab(self._tagging_tab, "标定")
         self._tabs.addTab(self._alignment_tab, "\u5bf9\u9f50")
         self._tabs.addTab(self._review_tab, "审核")
         self._tabs.addTab(self._execution_tab, "执行队列")
@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
         self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
+        self._worker.pull_progress.connect(self._execution_tab.on_pull_progress)
 
     def _apply_device_info_to_manifest(self, manifest, device_info) -> None:
         """把设备信息写回 manifest，并同步更新本地/服务器目标路径。"""

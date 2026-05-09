@@ -22,6 +22,7 @@ class ExecutionWorker(QThread):
 
     status_changed = pyqtSignal(str, str, str, str)
     upload_progress = pyqtSignal(str, int, int, str)  # case_id, current, total, filename
+    pull_progress = pyqtSignal(str, int, int, str)  # case_id, current, total, message
 
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
@@ -64,6 +65,7 @@ class ExecutionWorker(QThread):
         try:
             self.status_changed.disconnect()
             self.upload_progress.disconnect()
+            self.pull_progress.disconnect()
         except TypeError:
             pass
 
@@ -72,7 +74,12 @@ class ExecutionWorker(QThread):
         for step_name, step_fn in [("pull", pull_case), ("move", move_case)]:
             self.status_changed.emit(manifest.case_id, step_name, "started", "")
             try:
-                step_fn(manifest, self._config)
+                if step_name == "pull":
+                    def _pull_cb(step, current, total, msg):
+                        self.pull_progress.emit(manifest.case_id, current, total, msg)
+                    step_fn(manifest, self._config, progress_cb=_pull_cb)
+                else:
+                    step_fn(manifest, self._config)
                 self.status_changed.emit(manifest.case_id, step_name, "completed", "")
             except Exception as exc:
                 self.status_changed.emit(manifest.case_id, step_name, "failed", str(exc))
@@ -90,7 +97,7 @@ class ExecutionWorker(QThread):
                 break
             self.status_changed.emit(manifest.case_id, "upload", "started", "")
             try:
-                def _cb(current, total, filename, cid=manifest.case_id):
+                def _cb(step, current, total, filename, cid=manifest.case_id):
                     if not self._abort.is_set():
                         self.upload_progress.emit(cid, current, total, filename)
 

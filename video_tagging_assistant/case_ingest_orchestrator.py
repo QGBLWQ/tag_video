@@ -7,6 +7,7 @@
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from queue import Queue
 from typing import Callable, Iterable
@@ -185,8 +186,11 @@ def run_case_ingest(
     }
 
 
-def pull_case(manifest, config: dict) -> None:
-    """增量 pull：对比远端文件列表与本地已有文件，只拉缺失或大小不同的。"""
+def pull_case(manifest, config: dict, progress_cb=None) -> None:
+    """增量 pull：对比远端文件列表与本地已有文件，只拉缺失或大小不同的。
+
+    progress_cb(step, current, total, message) -- step="pull", current=bytes_pulled, total=bytes_to_pull
+    """
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
     dest.mkdir(parents=True, exist_ok=True)
@@ -199,7 +203,7 @@ def pull_case(manifest, config: dict) -> None:
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(_translate_adb_error(exc)) from exc
 
-    to_pull = {}
+    to_pull: dict[str, int] = {}
     for name, size in remote_files.items():
         local_file = dest / name
         if local_file.exists() and local_file.stat().st_size == size:
@@ -207,16 +211,47 @@ def pull_case(manifest, config: dict) -> None:
         to_pull[name] = size
 
     if not to_pull:
-        return  # all files already present
+        if progress_cb:
+            progress_cb("pull", 1, 1, "已全部存在")
+        return
 
-    for name in to_pull:
+    total_bytes = sum(to_pull.values())
+    pulled_bytes = 0
+
+    for name, size in to_pull.items():
         remote_path = f"{remote_dir}/{name}"
+        local_path = str(dest / name)
         try:
-            subprocess.run(
-                [adb_exe, "pull", remote_path, str(dest / name)],
-                check=True,
-                timeout=timeout,
+            proc = subprocess.Popen(
+                [adb_exe, "pull", remote_path, local_path],
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
             )
+            try:
+                for line in proc.stderr:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # adb progress: "[ 21%] /path/file.rkraw"
+                    if line.startswith("[") and "%" in line:
+                        pct_str = line.split("%")[0].split("[")[-1].strip()
+                        try:
+                            pct = float(pct_str)
+                            current = pulled_bytes + int(size * pct / 100)
+                            if progress_cb:
+                                progress_cb("pull", current, total_bytes, f"{int(pct)}% {name}")
+                        except (ValueError, IndexError):
+                            pass
+                proc.wait(timeout=timeout)
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    proc.wait()
+                if proc.returncode != 0:
+                    raise subprocess.CalledProcessError(proc.returncode, proc.args)
+            pulled_bytes += size
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(_translate_adb_error(exc)) from exc
 
@@ -260,7 +295,7 @@ def move_case(manifest, config: dict) -> None:
 
 
 def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 8) -> None:
-    """并发复制目录树，并通过回调上报文件级进度。"""
+    """并发复制目录树，并通过回调上报文件级进度（含传输速度）。"""
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -270,6 +305,7 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
     total = len(files)
     counter = [0]
     lock = threading.Lock()
+    start_time = time.time()
 
     def _copy_one(file: Path):
         rel = file.relative_to(src)
@@ -280,7 +316,9 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
             counter[0] += 1
             n = counter[0]
         if progress_cb:
-            progress_cb(n, total, file.name)
+            elapsed = max(time.time() - start_time, 0.001)
+            speed_str = f"{int(n / elapsed)} files/s"
+            progress_cb("upload", n, total, f"{speed_str}  {file.name}")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_copy_one, f) for f in files]
