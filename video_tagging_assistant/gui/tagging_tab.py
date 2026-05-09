@@ -85,8 +85,8 @@ class _TaggingWorker(QThread):
             from datetime import datetime
             ts = datetime.now().strftime("%H:%M:%S")
             log = f"{ts}  {event.case_id}  {cn_msg}"
-            # 只有完成事件才更新进度条
-            if msg in ("compressed", "tagged"):
+            # 只有 AI 打标完成才更新进度条
+            if msg == "tagged":
                 self.progress.emit(event.progress_current or 0, total_val, log)
             else:
                 self.log_msg.emit(log)
