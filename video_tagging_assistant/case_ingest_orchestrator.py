@@ -187,10 +187,7 @@ def run_case_ingest(
 
 
 def pull_case(manifest, config: dict, progress_cb=None) -> None:
-    """增量 pull：对比远端文件列表与本地已有文件，只拉缺失或大小不同的。
-
-    progress_cb(step, current, total, message) -- step="pull", current=bytes_pulled, total=bytes_to_pull
-    """
+    """增量 pull：对比远端文件列表与本地已有文件，有缺失时整目录拉取。"""
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
     dest.mkdir(parents=True, exist_ok=True)
@@ -203,57 +200,47 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(_translate_adb_error(exc)) from exc
 
-    to_pull: dict[str, int] = {}
-    for name, size in remote_files.items():
-        local_file = dest / name
-        if local_file.exists() and local_file.stat().st_size == size:
-            continue
-        to_pull[name] = size
+    missing = sum(
+        1 for name, size in remote_files.items()
+        if not (dest / name).exists() or (dest / name).stat().st_size != size
+    )
 
-    if not to_pull:
+    if missing == 0:
         if progress_cb:
             progress_cb("pull", 1, 1, "已全部存在")
         return
 
-    total_bytes = sum(to_pull.values())
-    pulled_bytes = 0
-
-    for name, size in to_pull.items():
-        remote_path = f"{remote_dir}/{name}"
-        local_path = str(dest / name)
+    remote_path = f"{remote_dir}/."
+    try:
+        proc = subprocess.Popen(
+            [adb_exe, "pull", remote_path, str(dest)],
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         try:
-            proc = subprocess.Popen(
-                [adb_exe, "pull", remote_path, local_path],
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            try:
-                for line in proc.stderr:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # adb progress: "[ 21%] /path/file.rkraw"
-                    if line.startswith("[") and "%" in line:
-                        pct_str = line.split("%")[0].split("[")[-1].strip()
-                        try:
-                            pct = float(pct_str)
-                            current = pulled_bytes + int(size * pct / 100)
-                            if progress_cb:
-                                progress_cb("pull", current, total_bytes, f"{int(pct)}% {name}")
-                        except (ValueError, IndexError):
-                            pass
-                proc.wait(timeout=timeout)
-            finally:
-                if proc.returncode is None:
-                    proc.kill()
-                    proc.wait()
-                if proc.returncode != 0:
-                    raise subprocess.CalledProcessError(proc.returncode, proc.args)
-            pulled_bytes += size
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(_translate_adb_error(exc)) from exc
+            for line in proc.stderr:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("[") and "%" in line:
+                    pct_str = line.split("%")[0].split("[")[-1].strip()
+                    try:
+                        pct = int(float(pct_str))
+                        if progress_cb:
+                            progress_cb("pull", pct, 100, f"{pct}%")
+                    except (ValueError, IndexError):
+                        pass
+            proc.wait(timeout=timeout)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                proc.wait()
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, proc.args)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(_translate_adb_error(exc)) from exc
 
 
 def move_case(manifest, config: dict) -> None:
