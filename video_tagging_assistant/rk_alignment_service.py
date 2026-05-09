@@ -44,6 +44,7 @@ class RkCandidate:
     numeric_value: int
     has_x_suffix: bool
     preview_path: Path | None = None
+    file_count: int = 0
 
 
 @dataclass
@@ -202,6 +203,7 @@ def _scan_candidate_root(root: Path | None) -> Tuple[list[RkCandidate], list[str
                 preview_path=preview_path,
                 numeric_value=int(_strip_x_suffix(child.name)),
                 has_x_suffix=has_x_suffix,
+                file_count=sum(1 for f in child.iterdir() if f.is_file()),
             )
         )
     candidates.sort(key=_candidate_sort_key)

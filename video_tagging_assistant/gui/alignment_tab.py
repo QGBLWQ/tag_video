@@ -318,7 +318,8 @@ class AlignmentTab(QWidget):
                 self._rk_preview_label.setText("\u65e0\u53ef\u7528 RK")
         else:
             self._candidate_label.setText(
-                f"{candidate.folder_name} ({candidate_index + 1}/{len(self._state.candidates)})"
+                f"RK: {candidate.folder_name}  [{candidate_index + 1}/{len(self._state.candidates)}]  "
+                f"文件数: {candidate.file_count or '?'}"
             )
             if update_rk_preview:
                 preview_path = candidate.preview_path or self._rk_preview_paths.get(candidate.folder_name)
