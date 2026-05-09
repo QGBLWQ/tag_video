@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
         self._approved_case_ids = set()
         self._enqueued_case_ids = set()
 
-        self.setWindowTitle("Video Tagging Pipeline")
+        self.setWindowTitle("go work!")
 
         self._worker = ExecutionWorker(config)
         self._worker.start()
@@ -257,6 +257,14 @@ class MainWindow(QMainWindow):
             self._review_tab._device_combo.clear()
             self._review_tab._device_combo.setEnabled(True)
 
+        # 自动执行模式：对齐完成后立即把所有 case 投入 pull+upload
+        if self._auto_execution_enabled:
+            self._tabs.setTabEnabled(3, True)
+            for manifest in manifests:
+                if manifest.case_id not in self._enqueued_case_ids:
+                    self._execution_tab.add_case(deepcopy(manifest))
+                    self._enqueued_case_ids.add(manifest.case_id)
+
         self._review_loaded = True
 
     def _on_case_approved(self, manifest, tag_result) -> None:
@@ -283,7 +291,8 @@ class MainWindow(QMainWindow):
         self._approved_case_ids.add(manifest.case_id)
         self._review_tab.advance_after_approval()
 
-        if manifest.case_id not in self._enqueued_case_ids:
+        # 非自动模式：审核通过后入队执行；自动模式已在 _maybe_enter_review 入队
+        if not self._auto_execution_enabled and manifest.case_id not in self._enqueued_case_ids:
             self._tabs.setTabEnabled(3, True)
             self._execution_tab.add_case(deepcopy(manifest))
             self._enqueued_case_ids.add(manifest.case_id)
