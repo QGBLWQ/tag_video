@@ -42,6 +42,7 @@ class _TaggingWorker(QThread):
     """在后台线程中加载 / 打标，避免阻塞 UI。"""
 
     progress = pyqtSignal(int, int, str)   # (current, total, current_file)
+    log_msg = pyqtSignal(str)              # 日志消息
     error = pyqtSignal(str)                # 错误描述
     finished = pyqtSignal(list)            # list of result dicts
 
@@ -69,13 +70,28 @@ class _TaggingWorker(QThread):
         output_root = Path(self._config.get("tagging_output_root", "artifacts/gui_pipeline"))
         total = len(self._manifests)
 
+        _EVENT_CN = {
+            "compressing": "压缩中",
+            "compressed": "压缩完成",
+            "tagging": "等待AI返回",
+            "tagged": "AI打标完成",
+            "loaded cache": "命中缓存",
+        }
+
         def _on_event(event):
-            current = event.progress_current or 0
+            msg = event.message
             total_val = event.progress_total or total
-            msg = f"{event.case_id}: {event.message}"
-            self.progress.emit(current, total_val, msg)
+            cn_msg = _EVENT_CN.get(msg, msg)
+            from datetime import datetime
+            ts = datetime.now().strftime("%H:%M:%S")
+            log = f"{ts}  {event.case_id}  {cn_msg}"
+            # 只有完成事件才更新进度条
+            if msg in ("compressed", "tagged"):
+                self.progress.emit(event.progress_current or 0, total_val, log)
+            else:
+                self.log_msg.emit(log)
             if event.event_type in ("error",):
-                self.error.emit(msg)
+                self.error.emit(f"{ts}  {event.case_id}  错误: {msg}")
 
         try:
             run_batch_tagging(
@@ -345,6 +361,7 @@ class TaggingTab(QWidget):
 
         self._worker = _TaggingWorker(self._config, self._manifests, mode)
         self._worker.progress.connect(self._on_progress)
+        self._worker.log_msg.connect(self._log_panel.append)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
         self._worker.start()
@@ -354,8 +371,7 @@ class TaggingTab(QWidget):
             self._progress_bar.setMaximum(total)
         self._progress_bar.setValue(current)
         self._current_file_label.setText(filename)
-        if filename:
-            self._log_panel.append(filename)
+        self._log_panel.append(filename)
 
     def _on_error(self, message: str) -> None:
         item = QListWidgetItem(message)
