@@ -431,6 +431,38 @@ class AlignmentTab(QWidget):
         if self._preview_results_by_row.get(case.manifest.row_index, {}).get("status") != "prepared":
             return
 
+        # 已对齐 case 换 RK → 弹窗确认
+        if "aligned" in case.status:
+            reply = QMessageBox.question(
+                self, "确认更换",
+                f"{case.manifest.case_id} 已对齐，确定更换 RK 为 {candidate.folder_name}？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # 检查 RK 是否已被其他 case 占用
+        for ac in self._state.aligned_cases:
+            if (
+                ac.manifest.row_index != case.manifest.row_index
+                and str(self._state.rk_raw_by_row.get(ac.manifest.row_index, "")) == candidate.folder_name
+            ):
+                QMessageBox.warning(
+                    self, "RK 冲突",
+                    f"RK {candidate.folder_name} 已被 {ac.manifest.case_id} 占用，"
+                    f"将为 {case.manifest.case_id} 分配此 RK，并清除 {ac.manifest.case_id} 的对齐。",
+                )
+                self._state = clear_alignment(self._state, ac.manifest.row_index)
+                try:
+                    clear_rk_raw_value(
+                        self._writeback_workbook_path,
+                        "获取列表",
+                        ac.manifest.row_index,
+                    )
+                except Exception:
+                    pass
+                break
+
         try:
             confirm_alignment(deepcopy(self._state), case.manifest.row_index, candidate.folder_name)
             normal_name = case.manifest.vs_normal_path.name if case.manifest.vs_normal_path.name != "." else ""
@@ -450,9 +482,17 @@ class AlignmentTab(QWidget):
             return
 
         self._candidate_overrides.pop(case.manifest.row_index, None)
-        self._pixmap_cache.pop(case.manifest.row_index, None)  # 释放已确认 case 的缓存
+        self._pixmap_cache.pop(case.manifest.row_index, None)
         self._append_log(f"{case.manifest.case_id} aligned to RK {candidate.folder_name}")
         self._render()
+        self._jump_to_first_pending()
+
+    def _jump_to_first_pending(self) -> None:
+        """对齐确认后自动跳转到第一个未对齐 case。"""
+        for i, case in enumerate(self._displayed_cases):
+            if "pending" in case.status:
+                self._queue_list.setCurrentRow(i)
+                return
 
     def _clear_current_case(self) -> None:
         case = self._current_case()
