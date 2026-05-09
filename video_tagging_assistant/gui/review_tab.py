@@ -68,7 +68,8 @@ class ReviewTab(QWidget):
         self._current_index = 0
         self._groups: dict = {}
         self._auto_mode = False
-        self._reviewed_history: list = []  # (manifest, tag_result, selections) tuples
+        self._approved_ids: set = set()
+        self._back_history: list = []  # [{"index": int, "selections": dict, "scene": str}, ...]
         self._locked_device = None
         self._awaiting_parent_confirmation = False
         self._device_combo = QComboBox()
@@ -116,7 +117,7 @@ class ReviewTab(QWidget):
 
         btn_row = QHBoxLayout()
         self._prev_btn = QPushButton("\u2190 \u4e0a\u4e00\u4e2a")
-        self._pass_btn = QPushButton("\u2714 \u901a\u8fc7")
+        self._pass_btn = QPushButton("\u2714 \u5199\u5165")
         self._skip_btn = QPushButton("\u2192 \u8df3\u8fc7")
         btn_row.addWidget(self._prev_btn)
         btn_row.addWidget(self._pass_btn)
@@ -189,7 +190,7 @@ class ReviewTab(QWidget):
             self._prev_btn.setEnabled(
                 self._current_index > 0
                 and not self._awaiting_parent_confirmation
-                and bool(self._reviewed_history)
+                and bool(self._back_history)
             )
 
     def load_cases(
@@ -204,10 +205,11 @@ class ReviewTab(QWidget):
         self._manifests = cases
         self._tagging_results = tagging_results
         self._current_index = 0
-        self._reviewed_history = []
         self._auto_mode = auto_mode
         self._locked_device = locked_device if isinstance(locked_device, dict) else None
         self._awaiting_parent_confirmation = False
+        self._approved_ids = set()
+        self._back_history = []
 
         if self._auto_mode and self._locked_device:
             self._device_combo.clear()
@@ -239,8 +241,9 @@ class ReviewTab(QWidget):
         manifest = self._manifests[index]
         ai_result = self._tagging_results.get(manifest.case_id, {})
 
+        status_tag = " [已通过]" if manifest.case_id in self._approved_ids else ""
         self._progress_label.setText(f"{index + 1}/{len(self._manifests)}")
-        self._case_label.setText(f"{manifest.case_id}   {manifest.vs_normal_path.name}")
+        self._case_label.setText(f"{manifest.case_id}{status_tag}   {manifest.vs_normal_path.name}")
         self._note_edit.clear()
 
         lines = []
@@ -297,6 +300,15 @@ class ReviewTab(QWidget):
             return
 
         manifest = self._manifests[self._current_index]
+        if manifest.case_id in self._approved_ids:
+            reply = QMessageBox.question(
+                self, "确认覆盖",
+                f"{manifest.case_id} 已写入过，确定覆盖？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
         device_info = self._device_combo.currentData() or {}
         tag_result = TagResult(
             install_method=selections.get("\u5b89\u88c5\u65b9\u5f0f", ""),
@@ -309,36 +321,46 @@ class ReviewTab(QWidget):
             device_info=device_info,
             review_status="\u5ba1\u6838\u901a\u8fc7",
         )
-        self._reviewed_history.append((manifest, tag_result, selections))
+        self._push_back_state(selections)
+        self._approved_ids.add(manifest.case_id)
         self._awaiting_parent_confirmation = True
         self._sync_action_buttons()
         self.case_approved.emit(manifest, tag_result)
+
+    def _push_back_state(self, selections: dict) -> None:
+        self._back_history.append({
+            "index": self._current_index,
+            "selections": selections,
+            "scene": self._scene_desc_edit.toPlainText().strip(),
+        })
 
     def _handle_skip(self) -> None:
         """跳过当前 case，仅在非全自动模式下可用。"""
         if self._awaiting_parent_confirmation:
             return
+        self._push_back_state({})
         self._advance()
 
     def _go_previous(self) -> None:
-        """回到上一个 case，恢复其字段选择以供修改后重新通过。"""
-        if not self._reviewed_history:
-            return
-        if self._current_index == 0:
+        """回到上一个 case，恢复之前状态（通过或跳过）。"""
+        if not self._back_history or self._current_index == 0:
             return
 
-        self._current_index -= 1
-        prev_manifest, prev_tag_result, prev_selections = self._reviewed_history.pop()
+        last = self._back_history.pop()
+        self._current_index = last["index"]
         self._show_case(self._current_index)
 
-        # 恢复之前保存的字段选择
-        self._scene_desc_edit.setPlainText(prev_tag_result.scene_description)
+        # 恢复场景描述
+        if last["scene"]:
+            self._scene_desc_edit.setPlainText(last["scene"])
+        # 恢复字段选择
         for field, group in self._groups.items():
-            target_value = prev_selections.get(field, "")
-            for button in group.buttons():
-                if button.text() == target_value:
-                    button.setChecked(True)
-                    break
+            target_value = last["selections"].get(field, "")
+            if target_value:
+                for button in group.buttons():
+                    if button.text() == target_value:
+                        button.setChecked(True)
+                        break
 
     def _open_potplayer(self) -> None:
         """调用 PotPlayer 打开当前 normal 视频，便于人工复核。"""
