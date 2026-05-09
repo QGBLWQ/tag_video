@@ -11,7 +11,7 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
-from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QByteArray, QBuffer, QIODevice, QThread, pyqtSignal
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication
 
