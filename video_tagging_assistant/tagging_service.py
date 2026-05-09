@@ -50,7 +50,10 @@ def _manifest_to_case_row(manifest: CaseManifest) -> ConfirmedCaseRow:
 
 
 def _generate_with_retry(provider, context, concurrency: dict):
-    """对 GUI 打标使用的 provider 调用加上重试逻辑。"""
+    """对 GUI 打标使用的 provider 调用加上重试逻辑。
+
+    只有临时错误（网络超时、5xx）才重试；欠费/Key错等永久错误直接抛出。
+    """
     max_retries = concurrency.get("max_retries", 3)
     delay = concurrency.get("retry_backoff_seconds", 2)
     multiplier = concurrency.get("retry_backoff_multiplier", 2)
@@ -61,6 +64,9 @@ def _generate_with_retry(provider, context, concurrency: dict):
             return provider.generate(context)
         except Exception as exc:
             last_error = exc
+            msg = str(exc)
+            if "不可重试" in msg:
+                raise
             if attempt >= max_retries:
                 raise
             time.sleep(current_delay)

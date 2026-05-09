@@ -1,3 +1,5 @@
+"""千问 DashScope 多模态 provider。"""
+
 import base64
 import json
 import os
@@ -5,11 +7,17 @@ from pathlib import Path
 from typing import Dict
 from urllib import request
 
+import urllib.error
+
 from video_tagging_assistant.models import GenerationResult, PromptContext
 from video_tagging_assistant.providers.base import VideoTagProvider
 
+# 不可重试的永久错误
+_FATAL_HTTP_CODES = {400, 401, 403}
+
 
 def parse_json_content(content: str) -> Dict:
+    """解析模型返回内容，兼容 ```json 代码块包裹格式。"""
     cleaned = content.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
@@ -22,6 +30,7 @@ def parse_json_content(content: str) -> Dict:
 
 
 def build_qwen_multimodal_message(video_data_url: str, prompt_text: str, fps: int) -> Dict:
+    """构造千问视频多模态输入消息体。"""
     return {
         "role": "user",
         "content": [
@@ -39,6 +48,7 @@ def build_qwen_multimodal_message(video_data_url: str, prompt_text: str, fps: in
 
 
 def normalize_response_payload(payload: Dict, source_video_path: Path, provider_name: str, model: str) -> GenerationResult:
+    """把千问结构化输出归一化为内部 `GenerationResult`。"""
     multi_select_field_names = {"画面特征", "影像表达"}
     structured_tags = {}
     multi_select_tags = {}
@@ -64,6 +74,8 @@ def normalize_response_payload(payload: Dict, source_video_path: Path, provider_
 
 
 class QwenDashScopeVideoTagProvider(VideoTagProvider):
+    """通过 DashScope 视频多模态接口执行打标。"""
+
     provider_name = "qwen_dashscope"
 
     def __init__(self, base_url: str, api_key_env: str, model: str, fps: int = 2, api_key: str = "") -> None:
@@ -74,10 +86,12 @@ class QwenDashScopeVideoTagProvider(VideoTagProvider):
         self.api_key = api_key
 
     def _encode_video(self, video_path: Path) -> str:
+        """把压缩后视频编码成 base64 data URL 载荷。"""
         with open(video_path, "rb") as video_file:
             return base64.b64encode(video_file.read()).decode("utf-8")
 
     def _build_prompt_text(self, context: PromptContext) -> str:
+        """把字段约束、上下文与规则拼成千问提示词。"""
         single_fields = context.template_fields.get("single_choice_fields", {})
         multi_fields = context.template_fields.get("multi_choice_fields", {})
         single_lines = [f"- {name}: {', '.join(values)}" for name, values in single_fields.items()]
@@ -120,6 +134,7 @@ class QwenDashScopeVideoTagProvider(VideoTagProvider):
         return "\n".join([line for line in prompt_lines if line])
 
     def generate(self, context: PromptContext) -> GenerationResult:
+        """调用 DashScope `/chat/completions` 并返回结构化结果。"""
         api_key = self.api_key or os.environ.get(self.api_key_env) or os.environ.get("DASHSCOPE_API_KEY")
         if not api_key:
             raise RuntimeError("未检测到可用的 DashScope API Key")
@@ -139,8 +154,17 @@ class QwenDashScopeVideoTagProvider(VideoTagProvider):
             },
             method="POST",
         )
-        with request.urlopen(req, timeout=180) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+        try:
+            with request.urlopen(req, timeout=120) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            status = exc.code
+            detail = f"HTTP {status}: {error_body[:300]}"
+            if status in _FATAL_HTTP_CODES:
+                raise RuntimeError(f"API 不可重试错误 ({detail})") from None
+            raise RuntimeError(f"API 请求失败 ({detail})") from None
+
         content = body["choices"][0]["message"]["content"]
         parsed = parse_json_content(content)
         return normalize_response_payload(parsed, context.source_video_path, self.provider_name, self.model)
