@@ -10,6 +10,7 @@ from pathlib import Path
 from PyQt5.QtCore import QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -106,6 +107,8 @@ class AlignmentTab(QWidget):
         self._rewrite_btn.clicked.connect(self._load_all_aligned_rows_for_rewrite)
         self._prev_btn.clicked.connect(self._select_previous_candidate)
         self._next_btn.clicked.connect(self._select_next_candidate)
+        self._normal_preview_list.itemDoubleClicked.connect(self._on_preview_double_clicked)
+        self._night_preview_list.itemDoubleClicked.connect(self._on_preview_double_clicked)
         self._confirm_btn.clicked.connect(self._confirm_current_case)
         self._clear_btn.clicked.connect(self._clear_current_case)
 
@@ -282,10 +285,27 @@ class AlignmentTab(QWidget):
             frame_path = Path(frame)
             item = QListWidgetItem()
             item.setText(frame_path.name)
+            item.setData(Qt.UserRole, str(frame_path))
             icon = QIcon(str(frame_path))
             if not icon.isNull():
                 item.setIcon(icon)
             widget.addItem(item)
+
+    def _on_preview_double_clicked(self, item: QListWidgetItem) -> None:
+        """双击 DJI 预览帧时弹出大图窗口。"""
+        frame_path = item.data(Qt.UserRole)
+        if not frame_path:
+            return
+        pixmap = QPixmap(frame_path)
+        if pixmap.isNull():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(item.text())
+        label = QLabel()
+        label.setPixmap(pixmap.scaled(640, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(label)
+        dialog.exec_()
 
     def _refresh_candidate_widgets(self, case, update_rk_preview: bool = True) -> None:
         candidate_index = self._current_candidate_index(case)
