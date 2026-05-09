@@ -187,7 +187,9 @@ class ReviewTab(QWidget):
         self._skip_btn.setEnabled(allow_actions and not self._auto_mode)
         if self._prev_btn:
             self._prev_btn.setEnabled(
-                self._current_index > 0 and not self._awaiting_parent_confirmation
+                self._current_index > 0
+                and not self._awaiting_parent_confirmation
+                and bool(self._reviewed_history)
             )
 
     def load_cases(
@@ -222,9 +224,8 @@ class ReviewTab(QWidget):
         """增量追加单个 case 到审核队列。"""
         self._manifests.append(manifest)
         self._tagging_results[manifest.case_id] = ai_result
-        # 如果当前正在显示"全部审核完毕"，切换到新 case
-        if self._current_index >= len(self._manifests) - 1:
-            self._show_case(len(self._manifests) - 1)
+        # 无论当前在哪，都刷新显示以更新进度计数
+        self._show_case(self._current_index)
         self._sync_action_buttons()
 
     def _show_case(self, index: int) -> None:
