@@ -188,6 +188,8 @@ def build_dji_preview_frames(
         ],
         check=True,
         timeout=120,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     _write_alignment_preview_cache_metadata(output_dir, frame_count, skip_frames)
     return sorted(output_dir.glob("frame_*.jpg"))
