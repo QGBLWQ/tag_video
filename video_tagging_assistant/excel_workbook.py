@@ -49,7 +49,7 @@ PIPELINE_RUNTIME_HEADERS = [
     "updated_at",
 ]
 
-GET_LIST_REQUIRED_HEADERS = {"处理状态", "RK_raw", "Action5Pro_Nomal", "Action5Pro_Night"}
+GET_LIST_REQUIRED_HEADERS = {"处理状态", "RK_raw"}
 
 
 @dataclass
@@ -364,17 +364,34 @@ def load_get_list_manifests(
     if missing:
         raise ValueError(f"获取列表 缺少必要表头: {sorted(missing)}")
 
+    # 从目录读取 DJI 视频，按名称排序，与 xlsm 有效行一一对应
+    normal_files = sorted(
+        [f for f in dji_nomal_dir.iterdir() if f.is_file()],
+        key=lambda f: f.name,
+    ) if dji_nomal_dir.exists() else []
+    night_files = sorted(
+        [f for f in dji_night_dir.iterdir() if f.is_file()],
+        key=lambda f: f.name,
+    ) if dji_night_dir.exists() else []
+
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
+    dji_index = 0
     for row_index in range(3, sheet.max_row + 1):
         status = str(sheet.cell(row_index, headers.get("处理状态", 0)).value or "").strip()
         if status == "R":
             continue
         rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
-        normal = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
-        night = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
-        if not rk_raw and not normal and not night:
+        # 保留 RK_raw 为空的行也被跳过的逻辑，但不依赖 normal/night 列来判断
+        # 如果 RK_raw 和 DJI 目录都为空，则跳过
+        has_dji = dji_index < len(normal_files)
+        if not rk_raw and not has_dji:
             continue
+
+        normal = normal_files[dji_index] if dji_index < len(normal_files) else Path(".")
+        night = night_files[dji_index] if dji_index < len(night_files) else Path(".")
+        dji_index += 1
+
         case_id = f"case_{pc_id}_{sequence:04d}"
         manifests.append(
             CaseManifest(
@@ -383,8 +400,8 @@ def load_get_list_manifests(
                 created_date=created_date,
                 mode=mode,
                 raw_path=Path(rk_raw),
-                vs_normal_path=Path(dji_nomal_dir) / normal if normal else Path(normal),
-                vs_night_path=Path(dji_night_dir) / night if night else Path(night),
+                vs_normal_path=normal,
+                vs_night_path=night,
                 local_case_root=Path(local_root) / mode / created_date / case_id,
                 server_case_dir=Path(server_root) / mode / created_date / case_id,
                 remark="",
