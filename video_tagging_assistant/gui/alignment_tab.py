@@ -400,11 +400,15 @@ class AlignmentTab(QWidget):
 
         try:
             confirm_alignment(deepcopy(self._state), case.manifest.row_index, candidate.folder_name)
+            normal_name = case.manifest.vs_normal_path.name if case.manifest.vs_normal_path.name != "." else ""
+            night_name = case.manifest.vs_night_path.name if case.manifest.vs_night_path.name != "." else ""
             write_rk_raw_value(
                 self._writeback_workbook_path,
                 "\u83b7\u53d6\u5217\u8868",
                 case.manifest.row_index,
                 candidate.folder_name,
+                normal_name=normal_name,
+                night_name=night_name,
             )
             self._state = confirm_alignment(self._state, case.manifest.row_index, candidate.folder_name)
         except Exception as exc:

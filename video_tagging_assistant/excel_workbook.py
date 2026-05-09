@@ -143,14 +143,25 @@ def load_aligned_rk_raw_rows(workbook_path: Path, source_sheet: str) -> Dict[int
     }
 
 
-def write_rk_raw_value(workbook_path: Path, source_sheet: str, row_index: int, rk_raw_value: str) -> None:
-    """把单行对齐结果写回「获取列表」的 RK_raw 列。"""
+def write_rk_raw_value(
+    workbook_path: Path,
+    source_sheet: str,
+    row_index: int,
+    rk_raw_value: str,
+    normal_name: str = "",
+    night_name: str = "",
+) -> None:
+    """把单行对齐结果写回「获取列表」的 RK_raw / Nomal / Night 列。"""
     workbook = load_workbook(workbook_path, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
     if "RK_raw" not in headers:
         raise ValueError("获取列表 缺少 RK_raw 表头")
     sheet.cell(row_index, headers["RK_raw"]).value = rk_raw_value
+    if normal_name and "Action5Pro_Nomal" in headers:
+        sheet.cell(row_index, headers["Action5Pro_Nomal"]).value = normal_name
+    if night_name and "Action5Pro_Night" in headers:
+        sheet.cell(row_index, headers["Action5Pro_Night"]).value = night_name
     workbook.save(workbook_path)
 
 
