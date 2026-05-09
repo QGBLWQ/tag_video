@@ -17,10 +17,12 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QShortcut,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+from PyQt5.QtGui import QKeySequence
 
 from video_tagging_assistant.excel_workbook import clear_rk_raw_value, write_rk_raw_value
 from video_tagging_assistant.gui.alignment_preview_worker import AlignmentPreviewWorker
@@ -107,6 +109,8 @@ class AlignmentTab(QWidget):
         self._next_btn.clicked.connect(self._select_next_candidate)
         self._normal_preview_list.itemDoubleClicked.connect(self._on_preview_double_clicked)
         self._night_preview_list.itemDoubleClicked.connect(self._on_preview_double_clicked)
+        QShortcut(QKeySequence("Return"), self, self._confirm_current_case)
+        QShortcut(QKeySequence("Enter"), self, self._confirm_current_case)
         self._confirm_btn.clicked.connect(self._confirm_current_case)
         self._clear_btn.clicked.connect(self._clear_current_case)
 
@@ -351,10 +355,16 @@ class AlignmentTab(QWidget):
                 self._rk_preview_label.clear()
                 self._rk_preview_label.setText("\u65e0\u53ef\u7528 RK")
         else:
-            self._candidate_label.setText(
+            label = (
                 f"RK: {candidate.folder_name}  [{candidate_index + 1}/{len(self._state.candidates)}]  "
                 f"文件数: {candidate.file_count or '?'}"
             )
+            # 标记被哪个 case 占用
+            for ac in self._state.aligned_cases:
+                if str(self._state.rk_raw_by_row.get(ac.manifest.row_index, "")) == candidate.folder_name:
+                    label += f"  → {ac.manifest.case_id}"
+                    break
+            self._candidate_label.setText(label)
             if update_rk_preview:
                 preview_path = candidate.preview_path or self._rk_preview_paths.get(candidate.folder_name)
                 if preview_path is None:
