@@ -160,6 +160,7 @@ class TaggingTab(QWidget):
         self._config = config
         self._manifests: list = []
         self._dut_devices: list = []
+        self._auto_start_validator = None
         self._worker: Optional[_TaggingWorker] = None
         self._writeback_path: Optional[Path] = None
         self._setup_ui()
@@ -310,9 +311,16 @@ class TaggingTab(QWidget):
             return device_info
         return {}
 
+    def set_auto_start_validator(self, validator) -> None:
+        self._auto_start_validator = validator
+
     def _validate_start(self) -> bool:
         if not self.auto_execution_enabled():
             return True
+
+        # 全自动模式：检查对齐是否完成
+        if self._auto_start_validator is not None and not self._auto_start_validator():
+            return False
 
         device_info = self.selected_device_info()
         if not device_info:

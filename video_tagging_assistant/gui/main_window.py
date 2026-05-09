@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
         self._tagging_tab = TaggingTab(config)
+        self._tagging_tab.set_auto_start_validator(self._validate_auto_start)
         self._alignment_tab = AlignmentTab(config)
         self._review_tab = ReviewTab(config, tag_options)
         self._execution_tab = ExecutionTab(self._worker)
@@ -126,14 +127,16 @@ class MainWindow(QMainWindow):
         return txt_path
 
     def _sync_case_txt_to_server(self, manifest, txt_path) -> None:
-        """在全自动模式下，把刚写出的 txt 补传到服务器 case 目录。"""
+        """在全自动模式下，把刚写出的 txt 补传到服务器 case 目录。
+
+        txt 可能比 rkraw 先到服务器，此时负责创建目录。
+        """
         server_case_dir = Path(manifest.server_case_dir)
-        if not server_case_dir.exists():
-            return
         if not isinstance(txt_path, Path) or not txt_path.exists():
             return
 
         try:
+            server_case_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(txt_path), str(server_case_dir / txt_path.name))
         except Exception as exc:
             raise RuntimeError(f"txt 上传失败: {exc}") from exc
@@ -201,8 +204,14 @@ class MainWindow(QMainWindow):
 
         self._maybe_enter_review()
 
+    def _validate_auto_start(self) -> bool:
+        """全自动模式启动前检查对齐是否完成。"""
+        if not self._alignment_ready:
+            self.statusBar().showMessage("请先完成全部 case 对齐后再开启自动执行", 5000)
+        return bool(self._alignment_ready)
+
     def _on_tagging_complete(self, results: list) -> None:
-        """保存打标结果与模式选择，等待进入审核阶段。"""
+        """保存打标结果与模式选择，自动执行模式下立即入队。"""
         self._workbook_path = self._tagging_tab._writeback_path or Path(self._tagging_tab._workbook_edit.text().strip())
 
         self._auto_execution_enabled = self._tagging_tab.auto_execution_enabled()
@@ -211,6 +220,17 @@ class MainWindow(QMainWindow):
 
         self._pending_tagging_results = list(results)
         self._tagging_finished = True
+
+        # 全自动模式：对齐已完成 → 所有 case 立即入队 pull+upload
+        if self._auto_execution_enabled and self._alignment_ready:
+            for result in results:
+                manifest = result["manifest"]
+                self._apply_device_info_to_manifest(manifest, self._locked_device_info)
+                if manifest.case_id not in self._enqueued_case_ids:
+                    self._tabs.setTabEnabled(3, True)
+                    self._execution_tab.add_case(deepcopy(manifest))
+                    self._enqueued_case_ids.add(manifest.case_id)
+
         self._maybe_enter_review()
 
     def _maybe_enter_review(self) -> None:
@@ -256,14 +276,6 @@ class MainWindow(QMainWindow):
         if not self._auto_execution_enabled and not dut_devices:
             self._review_tab._device_combo.clear()
             self._review_tab._device_combo.setEnabled(True)
-
-        # 自动执行模式：对齐完成后立即把所有 case 投入 pull+upload
-        if self._auto_execution_enabled:
-            self._tabs.setTabEnabled(3, True)
-            for manifest in manifests:
-                if manifest.case_id not in self._enqueued_case_ids:
-                    self._execution_tab.add_case(deepcopy(manifest))
-                    self._enqueued_case_ids.add(manifest.case_id)
 
         self._review_loaded = True
 
