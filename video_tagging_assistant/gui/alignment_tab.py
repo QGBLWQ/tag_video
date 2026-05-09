@@ -284,18 +284,34 @@ class AlignmentTab(QWidget):
         return False
 
     def _load_pixmaps_into_cache(self, row_index: int, payload: dict) -> None:
-        """将抽帧结果预加载为缩略图存入缓存。"""
+        """将后台生成的缩略图 bytes 转成 QIcon 存入缓存（无磁盘 I/O）。"""
         icons = []
-        for frame in payload.get("normal_frames", []) + payload.get("night_frames", []):
-            frame_path = str(frame)
-            name = Path(frame).name
-            pixmap = QPixmap(frame_path)
-            if not pixmap.isNull():
-                icon = QIcon()
-                icon.addPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                icons.append((name, icon, frame_path))
-            else:
-                icons.append((name, QIcon(), frame_path))
+        thumbnails = payload.get("thumbnails", [])
+        frames = payload.get("normal_frames", []) + payload.get("night_frames", [])
+        if thumbnails:
+            for i, frame in enumerate(frames):
+                name = Path(frame).name
+                frame_path = str(frame)
+                if i < len(thumbnails) and thumbnails[i]:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(thumbnails[i], "PNG")
+                    icon = QIcon()
+                    icon.addPixmap(pixmap)
+                    icons.append((name, icon, frame_path))
+                else:
+                    icons.append((name, QIcon(), frame_path))
+        else:
+            # 回退：主线程加载（用于旧版或本地模式）
+            for frame in frames:
+                frame_path = str(frame)
+                name = Path(frame).name
+                pixmap = QPixmap(frame_path)
+                if not pixmap.isNull():
+                    icon = QIcon()
+                    icon.addPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    icons.append((name, icon, frame_path))
+                else:
+                    icons.append((name, QIcon(), frame_path))
         self._pixmap_cache[row_index] = icons
         self._evict_cache()
 

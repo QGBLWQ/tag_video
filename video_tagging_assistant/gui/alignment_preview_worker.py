@@ -11,7 +11,8 @@ import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, QThread, pyqtSignal
+from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication
 
 from video_tagging_assistant.alignment_preview import (
@@ -122,6 +123,20 @@ class AlignmentPreviewWorker(QThread):
                 "error": str(exc),
             }
 
+        # 在后台线程预加载缩略图，避免主线程 I/O 阻塞
+        thumbnails: list[bytes] = []
+        for frame in list(normal_frames) + list(night_frames):
+            img = QImage(str(frame))
+            if not img.isNull():
+                img = img.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                buf = QBuffer()
+                buf.open(QIODevice.WriteOnly)
+                img.save(buf, "PNG")
+                thumbnails.append(bytes(buf.data()))
+                buf.close()
+            else:
+                thumbnails.append(b"")
+
         return {
             "row_index": manifest.row_index,
             "case_id": manifest.case_id,
@@ -131,6 +146,7 @@ class AlignmentPreviewWorker(QThread):
             "night_source": night_source,
             "normal_frames": list(normal_frames),
             "night_frames": list(night_frames),
+            "thumbnails": thumbnails,
         }
 
 
