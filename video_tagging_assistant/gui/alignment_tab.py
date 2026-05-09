@@ -26,7 +26,6 @@ from video_tagging_assistant.gui.alignment_preview_worker import AlignmentPrevie
 from video_tagging_assistant.rk_alignment_service import (
     clear_alignment,
     confirm_alignment,
-    enable_rewrite_rows,
 )
 
 
@@ -43,7 +42,6 @@ class AlignmentTab(QWidget):
         self._writeback_workbook_path = None
         self._state = None
         self._displayed_cases = []
-        self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
         self._preview_results_by_row = {}
         self._rk_preview_paths = {}
@@ -62,8 +60,6 @@ class AlignmentTab(QWidget):
         left.addWidget(QLabel("\u5bf9\u9f50\u961f\u5217"))
         self._queue_list = QListWidget()
         left.addWidget(self._queue_list, stretch=1)
-        self._rewrite_btn = QPushButton("\u91cd\u5199\u5df2\u5bf9\u9f50\u884c")
-        left.addWidget(self._rewrite_btn)
         left.addWidget(QLabel("\u65e5\u5fd7"))
         self._log_panel = QTextEdit()
         self._log_panel.setReadOnly(True)
@@ -106,7 +102,6 @@ class AlignmentTab(QWidget):
         outer.addLayout(right, stretch=2)
 
         self._queue_list.currentRowChanged.connect(self._show_case_by_index)
-        self._rewrite_btn.clicked.connect(self._load_all_aligned_rows_for_rewrite)
         self._prev_btn.clicked.connect(self._select_previous_candidate)
         self._next_btn.clicked.connect(self._select_next_candidate)
         self._normal_preview_list.itemDoubleClicked.connect(self._on_preview_double_clicked)
@@ -121,7 +116,6 @@ class AlignmentTab(QWidget):
         self._source_workbook_path = Path(workbook_path)
         self._writeback_workbook_path = Path(writeback_workbook_path)
         self._state = initial_state
-        self._rewrite_mode_row_indices = []
         self._candidate_overrides = {}
         self._preview_results_by_row = {
             manifest.row_index: {"status": "pending"}
@@ -134,13 +128,6 @@ class AlignmentTab(QWidget):
         self._render()
         self._start_preview_worker()
         self._start_rk_preview_pull()
-
-    def load_rewrite_rows(self, row_indices) -> None:
-        """切换到重写模式，仅展示指定行号对应的已对齐 case。"""
-        if self._state is not None:
-            self._state = enable_rewrite_rows(self._state, list(row_indices))
-        self._rewrite_mode_row_indices = list(row_indices)
-        self._render()
 
     def shutdown(self) -> None:
         """在窗口关闭时停止后台预览线程。"""
@@ -193,25 +180,7 @@ class AlignmentTab(QWidget):
     def _display_cases(self):
         if self._state is None:
             return []
-        if not self._rewrite_mode_row_indices:
-            return list(self._state.pending_cases)
-
-        aligned_by_row = {
-            case.manifest.row_index: case
-            for case in self._state.aligned_cases
-        }
-        pending_by_row = {
-            case.manifest.row_index: case
-            for case in self._state.pending_cases
-        }
-        displayed = []
-        for row_index in self._rewrite_mode_row_indices:
-            case = aligned_by_row.get(row_index)
-            if case is None:
-                case = pending_by_row.get(row_index)
-            if case is not None:
-                displayed.append(case)
-        return displayed
+        return list(self._state.aligned_cases) + list(self._state.pending_cases)
 
     def _render(self) -> None:
         self._displayed_cases = self._display_cases()
@@ -219,13 +188,12 @@ class AlignmentTab(QWidget):
         self._queue_list.clear()
         self._queue_list.setCurrentRow(-1)
         for case in self._displayed_cases:
+            if "aligned" in case.status:
+                prefix = "✓"
+            else:
+                prefix = "○"
             self._queue_list.addItem(
-                "row {row} | {case_id} | {status} | {normal}".format(
-                    row=case.manifest.row_index,
-                    case_id=case.manifest.case_id,
-                    status=case.status,
-                    normal=case.manifest.vs_normal_path.name,
-                )
+                f"{prefix} {case.manifest.case_id}  {case.manifest.vs_normal_path.name}"
             )
         self._queue_list.blockSignals(False)
         self._render_logs()
@@ -506,11 +474,6 @@ class AlignmentTab(QWidget):
         self._candidate_overrides.pop(case.manifest.row_index, None)
         self._append_log(f"{case.manifest.case_id} alignment cleared")
         self._render()
-
-    def _load_all_aligned_rows_for_rewrite(self) -> None:
-        if self._state is None:
-            return
-        self.load_rewrite_rows([case.manifest.row_index for case in self._state.aligned_cases])
 
     def _emit_state_change(self) -> None:
         if self._state is None:
