@@ -190,11 +190,12 @@ class AlignmentTab(QWidget):
         self._queue_list.setCurrentRow(-1)
         for case in self._displayed_cases:
             if "aligned" in case.status:
-                prefix = "✓"
+                rk = self._state.rk_raw_by_row.get(case.manifest.row_index, "")
+                prefix = f"✓ → {rk}"
             else:
                 prefix = "○"
             self._queue_list.addItem(
-                f"{prefix} {case.manifest.case_id}  {case.manifest.vs_normal_path.name}"
+                f"{prefix}  {case.manifest.case_id}  {case.manifest.vs_normal_path.name}"
             )
         self._queue_list.blockSignals(False)
         self._render_logs()
