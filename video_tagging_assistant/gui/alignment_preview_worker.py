@@ -67,6 +67,7 @@ class AlignmentPreviewWorker(QThread):
                     manifest = pending_manifests.pop(0)
                     future = executor.submit(self._prepare_case_preview, manifest, frame_count, skip_frames)
                     active_futures[future] = manifest
+                    self.log_message.emit(f"开始抽帧: {manifest.case_id}")
 
                 if not active_futures:
                     break
@@ -88,6 +89,7 @@ class AlignmentPreviewWorker(QThread):
         cache_root = Path("artifacts") / "alignment_previews" / cache_key
         ffprobe_exe = self._config.get("ffprobe_exe", "ffprobe")
         ffmpeg_exe = self._config.get("ffmpeg_exe", "ffmpeg")
+        self.log_message.emit(f"抽帧中: {manifest.case_id}")
         normal_source = Path(manifest.vs_normal_path)
         night_source = Path(manifest.vs_night_path)
         try:

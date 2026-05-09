@@ -276,7 +276,7 @@ class AlignmentTab(QWidget):
         if status == "failed":
             self._rk_preview_label.setText("\u9884\u89c8\u751f\u6210\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5 DJI \u89c6\u9891")
         else:
-            self._rk_preview_label.setText("\u9884\u89c8\u51c6\u5907\u4e2d\uff0c\u8bf7\u7a0d\u5019")
+            self._rk_preview_label.setText(f"{case.manifest.case_id} \u9884\u89c8\u51c6\u5907\u4e2d...")
         return False
 
     def _populate_preview_list(self, widget: QListWidget, frames) -> None:
@@ -286,8 +286,10 @@ class AlignmentTab(QWidget):
             item = QListWidgetItem()
             item.setText(frame_path.name)
             item.setData(Qt.UserRole, str(frame_path))
-            icon = QIcon(str(frame_path))
-            if not icon.isNull():
+            pixmap = QPixmap(str(frame_path))
+            if not pixmap.isNull():
+                icon = QIcon()
+                icon.addPixmap(pixmap.scaled(120, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 item.setIcon(icon)
             widget.addItem(item)
 
