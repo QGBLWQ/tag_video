@@ -297,14 +297,26 @@ def move_case(manifest, config: dict) -> None:
 
 
 def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 8) -> None:
-    """并发复制目录树，并通过回调上报文件级进度（含传输速度）。"""
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """复制目录树到服务器。
 
+    UNC 路径用 robocopy（多线程、断点续传、速率显示）；
+    本地路径回退到 ThreadPoolExecutor + shutil.copy2。
+    """
     files = [f for f in src.rglob("*") if f.is_file()]
     if not files:
         raise RuntimeError(f"upload 源目录为空或不存在: {src}")
     total = len(files)
+    dest_str = str(dest)
+    src_str = str(src)
+
+    # UNC 路径 → robocopy
+    if dest_str.startswith("\\\\"):
+        return _robocopy_with_progress(src_str, dest_str, total, progress_cb)
+
+    # 本地路径 → 多线程 copy2
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     counter = [0]
     lock = threading.Lock()
     start_time = time.time()
@@ -319,13 +331,51 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
             n = counter[0]
         if progress_cb:
             elapsed = max(time.time() - start_time, 0.001)
-            speed_str = f"{int(n / elapsed)} files/s"
-            progress_cb("upload", n, total, f"{speed_str}  {file.name}")
+            progress_cb("upload", n, total, f"{int(n / elapsed)} f/s  {file.name}")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_copy_one, f) for f in files]
         for fut in as_completed(futures):
-            fut.result()  # re-raise any exception
+            fut.result()
+
+
+def _robocopy_with_progress(src: str, dest: str, total_files: int, progress_cb=None) -> None:
+    """用 robocopy 复制目录树，解析输出获取进度与速率。"""
+    try:
+        proc = subprocess.Popen(
+            ["robocopy", src, dest, "/E", "/MT:8", "/R:3", "/W:5",
+             "/NP", "/NDL", "/NJH", "/NJS"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except FileNotFoundError:
+        raise RuntimeError("robocopy 不可用，请确保在 Windows 上运行")
+
+    copied = 0
+    last_speed = ""
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("New File"):
+                copied += 1
+                if progress_cb:
+                    progress_cb("upload", copied, total_files, f"{copied}/{total_files} {last_speed}")
+            elif "Bytes" in line and ("sec" in line.lower() or "min" in line.lower()):
+                last_speed = line.strip()
+                if progress_cb:
+                    progress_cb("upload", copied, total_files, f"{copied}/{total_files} {last_speed}")
+        proc.wait(timeout=3600)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            proc.wait()
+    if proc.returncode >= 8:
+        raise RuntimeError(f"robocopy 失败 (code={proc.returncode})")
 
 
 def upload_case(manifest, config: dict, progress_cb=None) -> None:
