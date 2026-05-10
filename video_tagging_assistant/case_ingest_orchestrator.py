@@ -23,6 +23,15 @@ _ADB_ERROR_MAP = {
 }
 
 
+def _translate_adb_error_text(raw: str) -> str:
+    """中文翻译 adb 错误文本。"""
+    text = raw.lower()
+    for keyword, chinese in _ADB_ERROR_MAP.items():
+        if keyword in text:
+            return f"{chinese}（原始错误: {raw.strip()}）"
+    return f"adb 命令失败: {raw.strip()}"
+
+
 def _translate_adb_error(error: subprocess.CalledProcessError) -> str:
     stderr = (error.stderr or "").lower()
     if isinstance(stderr, bytes):
@@ -187,7 +196,7 @@ def run_case_ingest(
 
 
 def pull_case(manifest, config: dict, progress_cb=None) -> None:
-    """增量 pull：对比远端文件列表与本地已有文件，有缺失时整目录拉取。"""
+    """增量 pull：对比远端/本地文件，有缺失时用 adb exec-out + tar 流式拉取。"""
     rk_suffix = manifest.raw_path.name
     dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
     dest.mkdir(parents=True, exist_ok=True)
@@ -207,40 +216,46 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
 
     if missing == 0:
         if progress_cb:
-            progress_cb("pull", 1, 1, "已全部存在")
+            progress_cb(1, 1, "已全部存在")
         return
 
-    remote_path = f"{remote_dir}/."
+    if progress_cb:
+        progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
     try:
-        proc = subprocess.Popen(
-            [adb_exe, "pull", remote_path, str(dest)],
+        adb_proc = subprocess.Popen(
+            [adb_exe, "exec-out", "cd", remote_dir, "&&", "tar", "cf", "-", "."],
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
         )
+        tar_proc = subprocess.Popen(
+            ["tar", "xf", "-", "-C", str(dest)],
+            stdin=adb_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        adb_proc.stdout.close()  # 允许 adb 收到 SIGPIPE
         try:
-            for line in proc.stderr:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("[") and "%" in line:
-                    pct_str = line.split("%")[0].split("[")[-1].strip()
-                    try:
-                        pct = int(float(pct_str))
-                        if progress_cb:
-                            progress_cb("pull", pct, 100, f"{pct}%")
-                    except (ValueError, IndexError):
-                        pass
-            proc.wait(timeout=timeout)
+            adb_proc.wait(timeout=timeout)
+            tar_proc.wait(timeout=60)
         finally:
-            if proc.returncode is None:
-                proc.kill()
-                proc.wait()
-            if proc.returncode != 0:
-                raise subprocess.CalledProcessError(proc.returncode, proc.args)
+            if adb_proc.returncode is None:
+                adb_proc.kill()
+                adb_proc.wait()
+            if tar_proc.returncode is None:
+                tar_proc.kill()
+                tar_proc.wait()
+        if adb_proc.returncode != 0:
+            stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
+            raw = stderr or f"adb exec-out 失败 (code={adb_proc.returncode})"
+            raise RuntimeError(_translate_adb_error_text(raw))
+        if tar_proc.returncode != 0:
+            raise RuntimeError(f"tar 解压失败 (code={tar_proc.returncode})")
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(_translate_adb_error(exc)) from exc
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"adb exec-out {remote_dir} 超时")
+    if progress_cb:
+        progress_cb(len(remote_files), len(remote_files), "传输完成")
 
 
 def move_case(manifest, config: dict) -> None:

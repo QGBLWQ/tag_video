@@ -16,6 +16,7 @@
   "server_upload_root": "\\\\<服务器IP>\\<共享目录>",
   "mode": "OV50H40_Action5Pro_DCG HDR",
   "upload_workers": 8,
+  "pull_workers": 2,
   "alignment_preload_cases": 10,
   "adb_pull_timeout": 600,
   "pc_id": "A",
