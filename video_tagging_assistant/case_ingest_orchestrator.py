@@ -309,11 +309,12 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
     dest_str = str(dest)
     src_str = str(src)
 
-    # UNC 路径 → robocopy
+    # UNC 路径 → 尝试 robocopy，不可用则回退
     if dest_str.startswith("\\\\"):
-        return _robocopy_with_progress(src_str, dest_str, total, progress_cb)
+        if _robocopy_available():
+            return _robocopy_with_progress(src_str, dest_str, total, progress_cb)
 
-    # 本地路径 → 多线程 copy2
+    # 本地路径或 robocopy 不可用 → 多线程 copy2
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -339,20 +340,26 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
             fut.result()
 
 
+def _robocopy_available() -> bool:
+    """检查 robocopy 是否可用。"""
+    try:
+        subprocess.run(["robocopy", "/?"], capture_output=True, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
 def _robocopy_with_progress(src: str, dest: str, total_files: int, progress_cb=None) -> None:
     """用 robocopy 复制目录树，解析输出获取进度与速率。"""
-    try:
-        proc = subprocess.Popen(
-            ["robocopy", src, dest, "/E", "/MT:8", "/R:3", "/W:5",
-             "/NP", "/NDL", "/NJH", "/NJS"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except FileNotFoundError:
-        raise RuntimeError("robocopy 不可用，请确保在 Windows 上运行")
+    proc = subprocess.Popen(
+        ["robocopy", src, dest, "/E", "/MT:8", "/R:3", "/W:5",
+         "/NP", "/NDL", "/NJH", "/NJS"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
     copied = 0
     last_speed = ""
