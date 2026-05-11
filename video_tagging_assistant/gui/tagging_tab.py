@@ -248,7 +248,7 @@ class TaggingTab(QWidget):
         try:
             pc_id = self._config.get("pc_id", "A")
             starting_seq = get_next_case_sequence(wb_path, pc_id)
-            self._manifests = load_get_list_manifests(
+            self._manifests, msg = load_get_list_manifests(
                 workbook_path=wb_path,
                 source_sheet="获取列表",
                 pc_id=pc_id,
@@ -259,6 +259,8 @@ class TaggingTab(QWidget):
                 mode=self._config.get("mode", ""),
                 starting_sequence=starting_seq,
             )
+            if msg:
+                self._log_panel.append(msg)
         except Exception as exc:
             self._error_list.addItem(f"加载失败: {exc}")
             return

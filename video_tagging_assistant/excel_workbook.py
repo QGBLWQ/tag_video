@@ -362,11 +362,11 @@ def load_get_list_manifests(
     server_root: Path,
     mode: str,
     starting_sequence: int = 1,
-) -> List[CaseManifest]:
+) -> tuple[List[CaseManifest], str]:
     """仅基于「获取列表」构建 `CaseManifest` 列表。
 
-    这个入口不依赖「创建记录」存在，主要供打标页预先生成 case_id
-    并在审核通过后再回填「创建记录」时使用。
+    返回 (manifests, message)。若全部 case 已处理完，
+    自动清空 DJI/RK 列并更新日期，message 为非空提示。
     """
     workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
@@ -375,6 +375,37 @@ def load_get_list_manifests(
     missing = GET_LIST_REQUIRED_HEADERS - set(headers)
     if missing:
         raise ValueError(f"获取列表 缺少必要表头: {sorted(missing)}")
+
+    message = ""
+
+    # 检查是否全部 case 已处理完（所有非空行状态=R）
+    if "处理状态" in headers:
+        all_done = True
+        has_content = False
+        for row_index in range(3, sheet.max_row + 1):
+            rk = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
+            status = str(sheet.cell(row_index, headers["处理状态"]).value or "").strip()
+            if rk:
+                has_content = True
+                if status != "R":
+                    all_done = False
+                    break
+        if has_content and all_done:
+            message = "上轮 case 全部处理完毕，正在导入最新 case"
+            # 清空 DJI 和 RK_raw 列，更新日期
+            wb = load_workbook(workbook_path, keep_vba=True)
+            ws = wb[source_sheet]
+            h = _header_map_for_row(ws, 2)
+            for row_index in range(3, ws.max_row + 1):
+                if "RK_raw" in h:
+                    ws.cell(row_index, h["RK_raw"]).value = None
+                if "Action5Pro_Nomal" in h:
+                    ws.cell(row_index, h["Action5Pro_Nomal"]).value = None
+                if "Action5Pro_Night" in h:
+                    ws.cell(row_index, h["Action5Pro_Night"]).value = None
+            ws.cell(1, 2).value = datetime.now().strftime("%Y%m%d")
+            wb.save(workbook_path)
+            created_date = str(ws.cell(1, 2).value or "").strip()
 
     # 从目录读取 DJI 视频，按名称排序，与 xlsm 有效行一一对应
     normal_files = sorted(
@@ -436,7 +467,7 @@ def load_get_list_manifests(
             )
         )
         sequence += 1
-    return manifests
+    return manifests, message
 
 
 def load_confirmed_cases(
