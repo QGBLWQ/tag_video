@@ -195,12 +195,31 @@ def run_case_ingest(
     }
 
 
+def _find_android_tar(adb_exe: str) -> str | None:
+    """检测 Android 设备上可用的 tar 二进制。返回路径或 None。"""
+    for candidate in ["tar", "busybox tar", "/system/bin/tar", "/system/xbin/tar"]:
+        try:
+            result = subprocess.run(
+                [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null || {candidate} --version 2>/dev/null"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return candidate
+        except Exception:
+            pass
+    return None
+
+
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
-    """尝试 adb exec-out + tar 流式拉取。成功返回 True，失败返回 False。"""
+    """尝试 adb exec-out + tar 流式拉取。先检测 tar 可用性。成功返回 True。"""
+    android_tar = _find_android_tar(adb_exe)
+    if android_tar is None:
+        return False
+
     try:
         adb_proc = subprocess.Popen(
-            [adb_exe, "exec-out", "cd", remote_dir, "&&", "tar", "cf", "-", "."],
+            [adb_exe, "exec-out", "cd", remote_dir, "&&", android_tar, "cf", "-", "."],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
