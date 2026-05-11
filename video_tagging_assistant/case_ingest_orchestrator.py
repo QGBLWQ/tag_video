@@ -197,7 +197,7 @@ def run_case_ingest(
 
 def _find_android_tar(adb_exe: str) -> str | None:
     """检测 Android 设备上可用的 tar 二进制。返回路径或 None。"""
-    for candidate in ["tar", "busybox tar", "/system/bin/tar", "/system/xbin/tar"]:
+    for candidate in ["tar", "busybox tar", "toybox tar", "/system/bin/tar", "/system/xbin/tar"]:
         try:
             result = subprocess.run(
                 [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null || {candidate} --version 2>/dev/null"],
@@ -310,8 +310,12 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
         progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
 
     # 优先尝试 tar 流式传输，失败则回退到 adb pull
-    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
-                         remote_files, missing):
+    if _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
+                     remote_files, missing):
+        pass  # tar 成功
+    else:
+        if progress_cb:
+            progress_cb(0, len(remote_files), "tar 不可用，退回 adb pull")
         _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
 
     if progress_cb:
