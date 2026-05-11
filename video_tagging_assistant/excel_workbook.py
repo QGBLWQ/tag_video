@@ -386,20 +386,41 @@ def load_get_list_manifests(
         key=lambda f: f.name,
     ) if dji_night_dir.exists() else []
 
-    # 建立 DJI 文件名→路径的快速查找，优先用 xlsm 存储的名称
+    # 建立 DJI 文件名→路径的快速查找
     normal_by_name = {f.name: f for f in normal_files}
     night_by_name = {f.name: f for f in night_files}
 
+    # 预扫描：收集 xlsm 中已存储的 DJI 名，标记为"已占用"
+    taken_normals: set[str] = set()
+    taken_nights: set[str] = set()
+    if "Action5Pro_Nomal" in headers:
+        for row_index in range(3, sheet.max_row + 1):
+            status = str(sheet.cell(row_index, headers.get("处理状态", 0)).value or "").strip()
+            if status == "R":
+                continue
+            name = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
+            if name:
+                taken_normals.add(name)
+            name = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
+            if name:
+                taken_nights.add(name)
+
+    def _first_untaken(files: list[Path], taken: set[str]) -> Path:
+        for f in files:
+            if f.name not in taken:
+                taken.add(f.name)
+                return f
+        return Path(".")
+
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
-    dji_index = 0
     for row_index in range(3, sheet.max_row + 1):
         status = str(sheet.cell(row_index, headers.get("处理状态", 0)).value or "").strip()
         if status == "R":
             continue
         rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
 
-        # 优先用 xlsm 已存储的 DJI 文件名，保证重加载稳定
+        # 优先用 xlsm 已存储的 DJI 文件名，保证重加载不偏移
         stored_normal = ""
         stored_night = ""
         if "Action5Pro_Nomal" in headers:
@@ -409,24 +430,15 @@ def load_get_list_manifests(
 
         if stored_normal and stored_normal in normal_by_name:
             normal = normal_by_name[stored_normal]
-        elif dji_index < len(normal_files):
-            normal = normal_files[dji_index]
         else:
-            normal = Path(".")
+            normal = _first_untaken(normal_files, taken_normals)
 
         if stored_night and stored_night in night_by_name:
             night = night_by_name[stored_night]
-        elif dji_index < len(night_files):
-            night = night_files[dji_index]
         else:
-            night = Path(".")
+            night = _first_untaken(night_files, taken_nights)
 
-        # 只有走位置匹配时才推进 dji_index
-        if not stored_normal or stored_normal not in normal_by_name:
-            dji_index += 1
-
-        has_dji = normal != Path(".") or night != Path(".")
-        if not rk_raw and not has_dji:
+        if not rk_raw and normal == Path(".") and night == Path("."):
             continue
 
         case_id = f"case_{pc_id}_{sequence:04d}"
