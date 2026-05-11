@@ -112,7 +112,7 @@ def _load_get_list_rows(workbook_path: Path, source_sheet: str) -> List[GetListR
 
 
 def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]:
-    """读取「获取列表」中每个有效视频行对应的 RK_raw 值。"""
+    """读取「获取列表」中每个有效行对应的 RK_raw 值（跳过 R 状态行）。"""
     workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
     sheet = workbook[source_sheet]
     headers = _header_map_for_row(sheet, 2)
@@ -122,15 +122,16 @@ def load_rk_raw_values(workbook_path: Path, source_sheet: str) -> Dict[int, str]
 
     values: Dict[int, str] = {}
     rk_col = headers["RK_raw"]
-    normal_col = headers["Action5Pro_Nomal"]
-    night_col = headers["Action5Pro_Night"]
+    status_col = headers.get("处理状态", 0)
 
     for row_index in range(3, sheet.max_row + 1):
-        normal = str(sheet.cell(row_index, normal_col).value or "").strip()
-        night = str(sheet.cell(row_index, night_col).value or "").strip()
-        if not normal and not night:
+        status = str(sheet.cell(row_index, status_col).value or "").strip()
+        if status == "R":
             continue
-        values[row_index] = str(sheet.cell(row_index, rk_col).value or "").strip()
+        rk_raw = str(sheet.cell(row_index, rk_col).value or "").strip()
+        if not rk_raw:
+            continue
+        values[row_index] = rk_raw
     return values
 
 
