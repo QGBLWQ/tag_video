@@ -6,7 +6,7 @@
 
 import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -50,53 +50,45 @@ class ExecutionWorker(QThread):
         return result
 
     def run(self) -> None:
-        """启动上传线程，并发 pull 所有 case，再串行 move，最后上传。"""
+        """流式执行：入队即拉，pull 并发，move 按完成顺序串行，upload 独立线程。"""
         upload_thread = threading.Thread(target=self._upload_loop, daemon=True)
         upload_thread.start()
 
-        # 收集所有待执行 case
-        cases: list[CaseManifest] = []
-        while True:
-            item = self._queue.get()
-            if item is _SENTINEL:
-                break
-            cases.append(item)
-
-        if not cases:
-            self._upload_queue.put(_SENTINEL)
-            upload_thread.join()
-            return
-
-        # Phase 1: 并发 pull
         pull_workers = int(self._config.get("pull_workers", 2))
-        with ThreadPoolExecutor(max_workers=pull_workers) as pool:
-            futures = {}
-            for manifest in cases:
-                def _make_pull_cb(cid):
-                    def _cb(current, total, msg):
-                        if not self._abort.is_set():
-                            self.pull_progress.emit(cid, current, total, msg)
-                    return _cb
-                self.status_changed.emit(manifest.case_id, "pull", "started", "")
-                f = pool.submit(pull_case, manifest, self._config, progress_cb=_make_pull_cb(manifest.case_id))
-                futures[f] = manifest
-            for f in as_completed(futures):
-                manifest = futures[f]
-                try:
-                    f.result()
-                    self.status_changed.emit(manifest.case_id, "pull", "completed", "")
-                except Exception as exc:
-                    self.status_changed.emit(manifest.case_id, "pull", "failed", str(exc))
+        pull_pool = ThreadPoolExecutor(max_workers=pull_workers)
+        pending_pulls: dict = {}  # future -> (manifest, move_done_flag)
+        move_lock = threading.Lock()
 
-        # Phase 2: 串行 move（仅处理 pull 成功的 case）
-        for manifest in cases:
-            try:
-                self.status_changed.emit(manifest.case_id, "move", "started", "")
-                move_case(manifest, self._config)
-                self.status_changed.emit(manifest.case_id, "move", "completed", "")
-                self._upload_queue.put(manifest)
-            except Exception as exc:
-                self.status_changed.emit(manifest.case_id, "move", "failed", str(exc))
+        def _make_pull_cb(cid):
+            def _cb(current, total, msg):
+                if not self._abort.is_set():
+                    self.pull_progress.emit(cid, current, total, msg)
+            return _cb
+
+        try:
+            while not self._abort.is_set():
+                try:
+                    item = self._queue.get(timeout=0.5)
+                except queue.Empty:
+                    # 没有新 case 时，检查已有的 pull 是否完成
+                    self._process_completed_pulls(pending_pulls, move_lock)
+                    continue
+
+                if item is _SENTINEL:
+                    break
+
+                manifest = item
+                self.status_changed.emit(manifest.case_id, "pull", "started", "")
+                f = pull_pool.submit(pull_case, manifest, self._config,
+                                     progress_cb=_make_pull_cb(manifest.case_id))
+                pending_pulls[f] = manifest
+
+            # 哨兵收到后等所有 pull 完成
+            while pending_pulls:
+                self._process_completed_pulls(pending_pulls, move_lock, block=True)
+
+        finally:
+            pull_pool.shutdown(wait=False)
 
         self._upload_queue.put(_SENTINEL)
         upload_thread.join()
@@ -107,6 +99,40 @@ class ExecutionWorker(QThread):
             self.pull_progress.disconnect()
         except TypeError:
             pass
+
+    def _process_completed_pulls(self, pending_pulls: dict, lock: threading.Lock,
+                                  block: bool = False) -> None:
+        """处理已完成的 pull：emit 状态 → move → 入上传队列。"""
+        from concurrent.futures import wait, FIRST_COMPLETED
+
+        if not pending_pulls:
+            return
+
+        if block:
+            done, _ = wait(pending_pulls, return_when=FIRST_COMPLETED)
+        else:
+            done, _ = wait(pending_pulls, timeout=0.1, return_when=FIRST_COMPLETED)
+
+        for f in done:
+            manifest = pending_pulls.pop(f, None)
+            if manifest is None:
+                continue
+            try:
+                f.result()
+                self.status_changed.emit(manifest.case_id, "pull", "completed", "")
+            except Exception as exc:
+                self.status_changed.emit(manifest.case_id, "pull", "failed", str(exc))
+                continue
+
+            # move 必须串行（同一本地目录操作）
+            with lock:
+                try:
+                    self.status_changed.emit(manifest.case_id, "move", "started", "")
+                    move_case(manifest, self._config)
+                    self.status_changed.emit(manifest.case_id, "move", "completed", "")
+                    self._upload_queue.put(manifest)
+                except Exception as exc:
+                    self.status_changed.emit(manifest.case_id, "move", "failed", str(exc))
 
     def _upload_loop(self) -> None:
         """独立线程消费上传队列，并持续上报进度。"""
