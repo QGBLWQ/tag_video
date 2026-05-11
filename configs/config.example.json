@@ -11,6 +11,7 @@
   "temp_path": "E:/DV/temp_pull_cache",
   "alignment_preview_frame_count": 30,
   "alignment_preview_skip_frames": 2,
+  "alignment_preview_duration": 10,
   "alignment_preview_workers": 2,
   "local_case_root": "E:/DV/采集建档V2.1",
   "server_upload_root": "\\\\<服务器IP>\\<共享目录>",

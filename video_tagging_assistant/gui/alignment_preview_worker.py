@@ -50,7 +50,7 @@ class AlignmentPreviewWorker(QThread):
 
     def run(self) -> None:
         """按配置并发生成整批 case 的预览帧。"""
-        frame_count, skip_frames, worker_count, logs = resolve_alignment_preview_settings(self._config)
+        frame_count, skip_frames, worker_count, duration, logs = resolve_alignment_preview_settings(self._config)
         for message in logs:
             if self._stop_event.is_set():
                 return
@@ -66,7 +66,7 @@ class AlignmentPreviewWorker(QThread):
             while (pending_manifests or active_futures) and not self._stop_event.is_set():
                 while pending_manifests and len(active_futures) < worker_count and not self._stop_event.is_set():
                     manifest = pending_manifests.pop(0)
-                    future = executor.submit(self._prepare_case_preview, manifest, frame_count, skip_frames)
+                    future = executor.submit(self._prepare_case_preview, manifest, frame_count, skip_frames, duration)
                     active_futures[future] = manifest
                     self.log_message.emit(f"开始抽帧: {manifest.case_id}")
 
@@ -84,7 +84,7 @@ class AlignmentPreviewWorker(QThread):
                 future.cancel()
             executor.shutdown(wait=True)
 
-    def _prepare_case_preview(self, manifest, frame_count: int, skip_frames: int) -> dict:
+    def _prepare_case_preview(self, manifest, frame_count: int, skip_frames: int, duration: int = 10) -> dict:
         """为单个 case 生成 normal/night 两组预览帧。"""
         cache_key = _preview_cache_key(manifest)
         cache_root = Path("artifacts") / "alignment_previews" / cache_key
@@ -101,6 +101,7 @@ class AlignmentPreviewWorker(QThread):
                 ffmpeg_exe,
                 frame_count=frame_count,
                 skip_frames=skip_frames,
+                duration=duration,
             )
             night_frames = build_dji_preview_frames(
                 night_source,
@@ -109,6 +110,7 @@ class AlignmentPreviewWorker(QThread):
                 ffmpeg_exe,
                 frame_count=frame_count,
                 skip_frames=skip_frames,
+                duration=duration,
             )
         except Exception as exc:
             return {

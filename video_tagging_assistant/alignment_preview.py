@@ -14,10 +14,11 @@ from typing import List
 DEFAULT_ALIGNMENT_PREVIEW_FRAME_COUNT = 30
 DEFAULT_ALIGNMENT_PREVIEW_SKIP_FRAMES = 2
 DEFAULT_ALIGNMENT_PREVIEW_WORKERS = 2
+DEFAULT_ALIGNMENT_PREVIEW_DURATION = 10  # 只读前 N 秒
 ALIGNMENT_PREVIEW_CACHE_METADATA_NAME = "alignment_preview_cache.json"
 
 
-def resolve_alignment_preview_settings(config: Mapping[str, object] | None) -> tuple[int, int, int, list[str]]:
+def resolve_alignment_preview_settings(config: Mapping[str, object] | None) -> tuple[int, int, int, int, list[str]]:
     """从配置中解析对齐预览抽帧参数，并返回规范化后的值与告警日志。"""
     settings = config if isinstance(config, Mapping) else {}
     logs: list[str] = []
@@ -39,7 +40,13 @@ def resolve_alignment_preview_settings(config: Mapping[str, object] | None) -> t
         "alignment_preview_workers",
         logs,
     )
-    return frame_count, skip_frames, workers, logs
+    duration = _positive_int(
+        settings.get("alignment_preview_duration"),
+        DEFAULT_ALIGNMENT_PREVIEW_DURATION,
+        "alignment_preview_duration",
+        logs,
+    )
+    return frame_count, skip_frames, workers, duration, logs
 
 
 def _positive_int(raw_value: object, default: int, key: str, logs: list[str]) -> int:
@@ -125,26 +132,31 @@ def _load_alignment_preview_cache_metadata(output_dir: Path) -> dict[str, int] |
 
     frame_count = _coerce_int(metadata.get("frame_count"))
     skip_frames = _coerce_int(metadata.get("skip_frames"))
+    duration = _coerce_int(metadata.get("duration"))
     if frame_count is None or skip_frames is None:
         return None
-    return {"frame_count": frame_count, "skip_frames": skip_frames}
+    return {"frame_count": frame_count, "skip_frames": skip_frames, "duration": duration or 0}
 
 
-def _write_alignment_preview_cache_metadata(output_dir: Path, frame_count: int, skip_frames: int) -> None:
+def _write_alignment_preview_cache_metadata(output_dir: Path, frame_count: int, skip_frames: int, duration: int) -> None:
     """写入当前抽帧参数，供后续命中缓存时校验。"""
     metadata_path = _alignment_preview_cache_metadata_path(output_dir)
     metadata_path.write_text(
-        json.dumps({"frame_count": frame_count, "skip_frames": skip_frames}, ensure_ascii=False),
+        json.dumps({"frame_count": frame_count, "skip_frames": skip_frames, "duration": duration}, ensure_ascii=False),
         encoding="utf-8",
     )
 
 
-def _cached_alignment_preview_matches(output_dir: Path, frame_count: int, skip_frames: int) -> bool:
+def _cached_alignment_preview_matches(output_dir: Path, frame_count: int, skip_frames: int, duration: int) -> bool:
     """判断现有缓存是否与当前抽帧配置一致。"""
     metadata = _load_alignment_preview_cache_metadata(output_dir)
     if metadata is None:
         return False
-    return metadata["frame_count"] == frame_count and metadata["skip_frames"] == skip_frames
+    return (
+        metadata["frame_count"] == frame_count
+        and metadata["skip_frames"] == skip_frames
+        and metadata.get("duration", 0) == duration
+    )
 
 
 def build_dji_preview_frames(
@@ -154,13 +166,14 @@ def build_dji_preview_frames(
     ffmpeg_exe: str,
     frame_count: int = DEFAULT_ALIGNMENT_PREVIEW_FRAME_COUNT,
     skip_frames: int = DEFAULT_ALIGNMENT_PREVIEW_SKIP_FRAMES,
+    duration: int = DEFAULT_ALIGNMENT_PREVIEW_DURATION,
 ) -> List[Path]:
     """为单个 DJI 视频生成抽帧预览图，并复用可命中的缓存。"""
     if not Path(video_path).exists():
         raise FileNotFoundError(f"DJI preview source does not exist: {video_path}")
 
     cached_frames = sorted(output_dir.glob("frame_*.jpg"))
-    if len(cached_frames) >= frame_count and _cached_alignment_preview_matches(output_dir, frame_count, skip_frames):
+    if len(cached_frames) >= frame_count and _cached_alignment_preview_matches(output_dir, frame_count, skip_frames, duration):
         return cached_frames[:frame_count]
 
     if output_dir.exists():
@@ -175,7 +188,7 @@ def build_dji_preview_frames(
         [
             ffmpeg_exe,
             "-y",
-            "-t", "60",  # 只读前 60 秒，对齐无需全片
+            "-t", str(duration),
             "-i",
             str(video_path),
             "-vf",
@@ -191,5 +204,5 @@ def build_dji_preview_frames(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    _write_alignment_preview_cache_metadata(output_dir, frame_count, skip_frames)
+    _write_alignment_preview_cache_metadata(output_dir, frame_count, skip_frames, duration)
     return sorted(output_dir.glob("frame_*.jpg"))
