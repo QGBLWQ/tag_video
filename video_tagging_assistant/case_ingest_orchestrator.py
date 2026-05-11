@@ -4,6 +4,8 @@
 供 GUI 执行队列和批处理入口复用。
 """
 
+from __future__ import annotations
+
 import shutil
 import subprocess
 import threading
