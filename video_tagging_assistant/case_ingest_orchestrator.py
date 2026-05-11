@@ -195,6 +195,74 @@ def run_case_ingest(
     }
 
 
+def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
+                  progress_cb, remote_files: dict, missing: int) -> bool:
+    """尝试 adb exec-out + tar 流式拉取。成功返回 True，失败返回 False。"""
+    try:
+        adb_proc = subprocess.Popen(
+            [adb_exe, "exec-out", "cd", remote_dir, "&&", "tar", "cf", "-", "."],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        tar_proc = subprocess.Popen(
+            ["tar", "xf", "-"],
+            stdin=adb_proc.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=dest,
+        )
+        adb_proc.stdout.close()
+        try:
+            adb_proc.wait(timeout=timeout)
+            tar_proc.wait(timeout=60)
+        finally:
+            if adb_proc.returncode is None:
+                adb_proc.kill()
+                adb_proc.wait()
+            if tar_proc.returncode is None:
+                tar_proc.kill()
+                tar_proc.wait()
+        if adb_proc.returncode == 0 and tar_proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
+                  progress_cb) -> None:
+    """回退方案：adb pull 整目录。"""
+    remote_path = f"{remote_dir}/."
+    proc = subprocess.Popen(
+        [adb_exe, "pull", remote_path, dest],
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        for line in proc.stderr:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("[") and "%" in line:
+                pct_str = line.split("%")[0].split("[")[-1].strip()
+                try:
+                    pct = int(float(pct_str))
+                    if progress_cb:
+                        progress_cb(pct, 100, f"{pct}% (adb)")
+                except (ValueError, IndexError):
+                    pass
+        proc.wait(timeout=timeout)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            proc.wait()
+    if proc.returncode != 0:
+        stderr_text = proc.stderr.read() if hasattr(proc.stderr, 'read') else ""
+        raise RuntimeError(f"adb pull 失败: {stderr_text}")
+
+
 def pull_case(manifest, config: dict, progress_cb=None) -> None:
     """增量 pull：对比远端/本地文件，有缺失时用 adb exec-out + tar 流式拉取。"""
     rk_suffix = manifest.raw_path.name
@@ -221,39 +289,12 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
 
     if progress_cb:
         progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
-    try:
-        adb_proc = subprocess.Popen(
-            [adb_exe, "exec-out", "cd", remote_dir, "&&", "tar", "cf", "-", "."],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        tar_proc = subprocess.Popen(
-            ["tar", "xf", "-", "-C", str(dest)],
-            stdin=adb_proc.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        adb_proc.stdout.close()  # 允许 adb 收到 SIGPIPE
-        try:
-            adb_proc.wait(timeout=timeout)
-            tar_proc.wait(timeout=60)
-        finally:
-            if adb_proc.returncode is None:
-                adb_proc.kill()
-                adb_proc.wait()
-            if tar_proc.returncode is None:
-                tar_proc.kill()
-                tar_proc.wait()
-        if adb_proc.returncode != 0:
-            stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
-            raw = stderr or f"adb exec-out 失败 (code={adb_proc.returncode})"
-            raise RuntimeError(_translate_adb_error_text(raw))
-        if tar_proc.returncode != 0:
-            raise RuntimeError(f"tar 解压失败 (code={tar_proc.returncode})")
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(_translate_adb_error(exc)) from exc
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"adb exec-out {remote_dir} 超时")
+
+    # 优先尝试 tar 流式传输，失败则回退到 adb pull
+    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
+                         remote_files, missing):
+        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+
     if progress_cb:
         progress_cb(len(remote_files), len(remote_files), "传输完成")
 
