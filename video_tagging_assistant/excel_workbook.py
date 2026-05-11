@@ -386,6 +386,10 @@ def load_get_list_manifests(
         key=lambda f: f.name,
     ) if dji_night_dir.exists() else []
 
+    # 建立 DJI 文件名→路径的快速查找，优先用 xlsm 存储的名称
+    normal_by_name = {f.name: f for f in normal_files}
+    night_by_name = {f.name: f for f in night_files}
+
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
     dji_index = 0
@@ -394,15 +398,36 @@ def load_get_list_manifests(
         if status == "R":
             continue
         rk_raw = str(sheet.cell(row_index, headers["RK_raw"]).value or "").strip()
-        # 保留 RK_raw 为空的行也被跳过的逻辑，但不依赖 normal/night 列来判断
-        # 如果 RK_raw 和 DJI 目录都为空，则跳过
-        has_dji = dji_index < len(normal_files)
+
+        # 优先用 xlsm 已存储的 DJI 文件名，保证重加载稳定
+        stored_normal = ""
+        stored_night = ""
+        if "Action5Pro_Nomal" in headers:
+            stored_normal = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
+        if "Action5Pro_Night" in headers:
+            stored_night = str(sheet.cell(row_index, headers["Action5Pro_Night"]).value or "").strip()
+
+        if stored_normal and stored_normal in normal_by_name:
+            normal = normal_by_name[stored_normal]
+        elif dji_index < len(normal_files):
+            normal = normal_files[dji_index]
+        else:
+            normal = Path(".")
+
+        if stored_night and stored_night in night_by_name:
+            night = night_by_name[stored_night]
+        elif dji_index < len(night_files):
+            night = night_files[dji_index]
+        else:
+            night = Path(".")
+
+        # 只有走位置匹配时才推进 dji_index
+        if not stored_normal or stored_normal not in normal_by_name:
+            dji_index += 1
+
+        has_dji = normal != Path(".") or night != Path(".")
         if not rk_raw and not has_dji:
             continue
-
-        normal = normal_files[dji_index] if dji_index < len(normal_files) else Path(".")
-        night = night_files[dji_index] if dji_index < len(night_files) else Path(".")
-        dji_index += 1
 
         case_id = f"case_{pc_id}_{sequence:04d}"
         manifests.append(
