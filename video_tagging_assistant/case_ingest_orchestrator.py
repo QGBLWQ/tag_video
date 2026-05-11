@@ -251,9 +251,13 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        # 先缓存到临时文件，再解压
+        # 估算总大小（tar 有 metadata 开销，实际多 ~5-10%）
+        total_est = sum(remote_files.values())
+        total_files = len(remote_files)
+
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar")
         total_read = 0
+        start_time = time.time()
         try:
             with os.fdopen(tmp_fd, "wb") as tmp_file:
                 while True:
@@ -262,21 +266,33 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                         break
                     tmp_file.write(chunk)
                     total_read += len(chunk)
+                    if progress_cb and total_est > 0:
+                        pct = min(int(total_read / total_est * 100), 99)
+                        elapsed = max(time.time() - start_time, 0.001)
+                        mb = total_read / (1024 * 1024)
+                        speed = mb / elapsed
+                        progress_cb(pct, 100,
+                                    f"tar {pct}%  {mb:.0f}MB  {speed:.1f}MB/s")
+                    elif progress_cb:
+                        progress_cb(0, total_files,
+                                    f"tar 接收中 {total_read / 1024:.0f}KB")
             adb_proc.wait(timeout=timeout)
 
             if adb_proc.returncode != 0:
                 stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
                 if progress_cb:
-                    progress_cb(0, len(remote_files),
+                    progress_cb(0, total_files,
                                 f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
                 return False
 
             if total_read < 1024:
                 if progress_cb:
-                    progress_cb(0, len(remote_files),
+                    progress_cb(0, total_files,
                                 f"tar 流仅 {total_read} 字节，回退 adb pull")
                 return False
 
+            if progress_cb:
+                progress_cb(total_files * 0.9, total_files, "tar 解压中...")
             with tarfile.open(tmp_path, mode="r") as tar:
                 tar.extractall(path=dest)
             return True
