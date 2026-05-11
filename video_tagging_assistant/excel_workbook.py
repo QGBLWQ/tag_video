@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +362,7 @@ def load_get_list_manifests(
     server_root: Path,
     mode: str,
     starting_sequence: int = 1,
-) -> tuple[List[CaseManifest], str]:
+) -> Tuple[List[CaseManifest], str]:
     """仅基于「获取列表」构建 `CaseManifest` 列表。
 
     返回 (manifests, message)。若全部 case 已处理完，
