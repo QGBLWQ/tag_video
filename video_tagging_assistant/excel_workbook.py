@@ -397,6 +397,8 @@ def load_get_list_manifests(
             ws = wb[source_sheet]
             h = _header_map_for_row(ws, 2)
             for row_index in range(3, ws.max_row + 1):
+                if "处理状态" in h:
+                    ws.cell(row_index, h["处理状态"]).value = None
                 if "RK_raw" in h:
                     ws.cell(row_index, h["RK_raw"]).value = None
                 if "Action5Pro_Nomal" in h:
