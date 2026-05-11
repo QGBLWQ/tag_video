@@ -216,10 +216,15 @@ def _find_android_tar(adb_exe: str) -> str | None:
 
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
-    """尝试 adb exec-out + tar 流式拉取。先检测 tar 可用性。成功返回 True。"""
+    """尝试 adb exec-out + tar 流式拉取。成功返回 True，失败返回 False。"""
     android_tar = _find_android_tar(adb_exe)
     if android_tar is None:
+        if progress_cb:
+            progress_cb(0, len(remote_files), "Android 无 tar，回退 adb pull")
         return False
+
+    if progress_cb:
+        progress_cb(0, len(remote_files), f"tar 流式传输 ({android_tar})")
 
     try:
         adb_proc = subprocess.Popen(
@@ -245,10 +250,24 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             if tar_proc.returncode is None:
                 tar_proc.kill()
                 tar_proc.wait()
-        if adb_proc.returncode == 0 and tar_proc.returncode == 0:
+
+        # 收集诊断信息
+        adb_ok = adb_proc.returncode == 0
+        tar_ok = tar_proc.returncode == 0
+        if not adb_ok:
+            stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
+            if progress_cb:
+                progress_cb(0, len(remote_files),
+                            f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
+        if not tar_ok:
+            if progress_cb:
+                progress_cb(0, len(remote_files),
+                            f"本地 tar 解压失败(code={tar_proc.returncode})，回退 adb pull")
+        if adb_ok and tar_ok:
             return True
-    except Exception:
-        pass
+    except Exception as exc:
+        if progress_cb:
+            progress_cb(0, len(remote_files), f"tar 异常: {exc}，回退 adb pull")
     return False
 
 
@@ -314,12 +333,8 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
         progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
 
     # 优先尝试 tar 流式传输，失败则回退到 adb pull
-    if _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
-                     remote_files, missing):
-        pass  # tar 成功
-    else:
-        if progress_cb:
-            progress_cb(0, len(remote_files), "tar 不可用，退回 adb pull")
+    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
+                         remote_files, missing):
         _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
 
     if progress_cb:
