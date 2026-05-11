@@ -197,7 +197,9 @@ def run_case_ingest(
 
 def _find_android_tar(adb_exe: str) -> str | None:
     """检测 Android 设备上可用的 tar 二进制。返回路径或 None。"""
-    for candidate in ["tar", "busybox tar", "toybox tar", "/system/bin/tar", "/system/xbin/tar"]:
+    for candidate in ["tar", "busybox tar", "toybox tar",
+                      "/system/bin/tar", "/system/xbin/tar",
+                      "/data/local/tmp/tar", "/data/local/tmp/busybox tar"]:
         try:
             result = subprocess.run(
                 [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null || {candidate} --version 2>/dev/null"],
