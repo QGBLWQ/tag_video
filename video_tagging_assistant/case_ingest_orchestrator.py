@@ -217,7 +217,10 @@ def _find_android_tar(adb_exe: str) -> str | None:
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
     """尝试 adb exec-out + tar 流式拉取，用 Python tarfile 解压。成功返回 True。"""
+    import io
+    import os
     import tarfile
+    import tempfile
 
     android_tar = _find_android_tar(adb_exe)
     if android_tar is None:
@@ -234,23 +237,32 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        # 先缓存到临时文件（避免管道截断），再解压
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar")
         try:
-            with tarfile.open(fileobj=adb_proc.stdout, mode="r|") as tar:
-                tar.extractall(path=dest)
+            with os.fdopen(tmp_fd, "wb") as tmp_file:
+                while True:
+                    chunk = adb_proc.stdout.read(8 * 1024 * 1024)  # 8MB
+                    if not chunk:
+                        break
+                    tmp_file.write(chunk)
             adb_proc.wait(timeout=timeout)
-        finally:
-            if adb_proc.returncode is None:
-                adb_proc.kill()
-                adb_proc.wait()
 
-        if adb_proc.returncode == 0:
+            if adb_proc.returncode != 0:
+                stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
+                if progress_cb:
+                    progress_cb(0, len(remote_files),
+                                f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
+                return False
+
+            with tarfile.open(tmp_path, mode="r") as tar:
+                tar.extractall(path=dest)
             return True
-
-        stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
-        if progress_cb:
-            progress_cb(0, len(remote_files),
-                        f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
-        return False
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     except Exception as exc:
         if progress_cb:
             progress_cb(0, len(remote_files), f"tar 异常: {exc}，回退 adb pull")
