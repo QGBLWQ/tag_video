@@ -368,10 +368,7 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
     if progress_cb:
         progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
 
-    # 优先尝试 tar 流式传输，失败则回退到 adb pull
-    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout, progress_cb,
-                         remote_files, missing):
-        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+    _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
 
     if progress_cb:
         progress_cb(len(remote_files), len(remote_files), "传输完成")
