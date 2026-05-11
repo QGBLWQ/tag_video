@@ -198,16 +198,28 @@ def run_case_ingest(
 
 
 def _find_android_tar(adb_exe: str) -> str | None:
-    """检测 Android 设备上可用的 tar 二进制。返回路径或 None。"""
+    """检测 Android 设备上可用的 tar 二进制。返回可用的命令行或 None。"""
     for candidate in ["tar", "busybox tar", "toybox tar",
                       "/system/bin/tar", "/system/xbin/tar",
                       "/data/local/tmp/tar", "/data/local/tmp/busybox tar"]:
         try:
-            result = subprocess.run(
-                [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null || {candidate} --version 2>/dev/null"],
+            # 先用 which 拿完整路径
+            which_result = subprocess.run(
+                [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null"],
                 capture_output=True, text=True, timeout=10,
             )
-            if result.returncode == 0 and result.stdout.strip():
+            if which_result.returncode == 0 and which_result.stdout.strip():
+                full_path = which_result.stdout.strip()
+                # 返回完整路径形式：/usr/bin/tar cf 或 /data/local/tmp/busybox tar cf
+                if " " in candidate:
+                    full_path += " " + candidate.split(" ", 1)[1]
+                return full_path
+            # which 失败则尝试直接运行
+            ver_result = subprocess.run(
+                [adb_exe, "shell", f"{candidate} --version 2>/dev/null"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if ver_result.returncode == 0 and ver_result.stdout.strip():
                 return candidate
         except Exception:
             pass
@@ -232,8 +244,10 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         progress_cb(0, len(remote_files), f"tar 流式传输 ({android_tar})")
 
     try:
+        # exec-out 无交互 shell，PATH 可能不同；tar 已由 _find_android_tar 定位
+        tar_cmd = f"cd {remote_dir} && {android_tar} cf - ."
         adb_proc = subprocess.Popen(
-            [adb_exe, "exec-out", "cd", remote_dir, "&&", android_tar, "cf", "-", "."],
+            [adb_exe, "exec-out", tar_cmd],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
