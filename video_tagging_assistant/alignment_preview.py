@@ -169,13 +169,13 @@ def build_dji_preview_frames(
                 child.unlink()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _probe_video_stream(video_path, ffprobe_exe)
     step = skip_frames + 1
     output_pattern = output_dir / "frame_%03d.jpg"
     subprocess.run(
         [
             ffmpeg_exe,
             "-y",
+            "-t", "60",  # 只读前 60 秒，对齐无需全片
             "-i",
             str(video_path),
             "-vf",
@@ -187,7 +187,7 @@ def build_dji_preview_frames(
             str(output_pattern),
         ],
         check=True,
-        timeout=120,
+        timeout=30,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
