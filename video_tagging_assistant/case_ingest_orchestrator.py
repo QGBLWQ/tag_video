@@ -237,15 +237,17 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        # 先缓存到临时文件（避免管道截断），再解压
+        # 先缓存到临时文件，再解压
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar")
+        total_read = 0
         try:
             with os.fdopen(tmp_fd, "wb") as tmp_file:
                 while True:
-                    chunk = adb_proc.stdout.read(8 * 1024 * 1024)  # 8MB
+                    chunk = adb_proc.stdout.read(8 * 1024 * 1024)
                     if not chunk:
                         break
                     tmp_file.write(chunk)
+                    total_read += len(chunk)
             adb_proc.wait(timeout=timeout)
 
             if adb_proc.returncode != 0:
@@ -253,6 +255,12 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 if progress_cb:
                     progress_cb(0, len(remote_files),
                                 f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
+                return False
+
+            if total_read < 1024:
+                if progress_cb:
+                    progress_cb(0, len(remote_files),
+                                f"tar 流仅 {total_read} 字节，回退 adb pull")
                 return False
 
             with tarfile.open(tmp_path, mode="r") as tar:
