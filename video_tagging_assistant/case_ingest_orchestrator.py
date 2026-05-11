@@ -216,7 +216,9 @@ def _find_android_tar(adb_exe: str) -> str | None:
 
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
-    """尝试 adb exec-out + tar 流式拉取。成功返回 True，失败返回 False。"""
+    """尝试 adb exec-out + tar 流式拉取，用 Python tarfile 解压。成功返回 True。"""
+    import tarfile
+
     android_tar = _find_android_tar(adb_exe)
     if android_tar is None:
         if progress_cb:
@@ -232,39 +234,23 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        tar_proc = subprocess.Popen(
-            ["tar", "xf", "-"],
-            stdin=adb_proc.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=dest,
-        )
-        adb_proc.stdout.close()
         try:
+            with tarfile.open(fileobj=adb_proc.stdout, mode="r|") as tar:
+                tar.extractall(path=dest)
             adb_proc.wait(timeout=timeout)
-            tar_proc.wait(timeout=60)
         finally:
             if adb_proc.returncode is None:
                 adb_proc.kill()
                 adb_proc.wait()
-            if tar_proc.returncode is None:
-                tar_proc.kill()
-                tar_proc.wait()
 
-        # 收集诊断信息
-        adb_ok = adb_proc.returncode == 0
-        tar_ok = tar_proc.returncode == 0
-        if not adb_ok:
-            stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
-            if progress_cb:
-                progress_cb(0, len(remote_files),
-                            f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
-        if not tar_ok:
-            if progress_cb:
-                progress_cb(0, len(remote_files),
-                            f"本地 tar 解压失败(code={tar_proc.returncode})，回退 adb pull")
-        if adb_ok and tar_ok:
+        if adb_proc.returncode == 0:
             return True
+
+        stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
+        if progress_cb:
+            progress_cb(0, len(remote_files),
+                        f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
+        return False
     except Exception as exc:
         if progress_cb:
             progress_cb(0, len(remote_files), f"tar 异常: {exc}，回退 adb pull")
