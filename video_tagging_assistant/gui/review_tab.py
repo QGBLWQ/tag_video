@@ -15,8 +15,6 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -94,11 +92,6 @@ class ReviewTab(QWidget):
         device_row.addWidget(QLabel("\u8bbe\u5907\u7f16\u53f7:"))
         device_row.addWidget(self._device_combo, stretch=1)
         outer.addLayout(device_row)
-
-        self._case_list = QListWidget()
-        self._case_list.setMaximumHeight(120)
-        self._case_list.currentRowChanged.connect(self._on_case_list_select)
-        outer.addWidget(self._case_list)
 
         self._ai_summary_label = QLabel("AI \u6807\u7b7e\uff1a\uff08\u672a\u52a0\u8f7d\uff09")
         self._ai_summary_label.setWordWrap(True)
@@ -227,7 +220,6 @@ class ReviewTab(QWidget):
                 self._populate_device_combo(dut_devices)
             self._device_combo.setEnabled(True)
 
-        self._rebuild_case_list()
         self._show_case(0)
 
     def add_case(self, manifest, ai_result: dict) -> None:
@@ -266,69 +258,12 @@ class ReviewTab(QWidget):
         self._scene_desc_edit.setPlainText(ai_result.get("\u753b\u9762\u63cf\u8ff0", ""))
 
         self._rebuild_field_buttons(ai_result)
-        self._case_list.blockSignals(True)
-        self._case_list.setCurrentRow(index)
-        self._case_list.blockSignals(False)
         self._sync_action_buttons()
-
-    def _rebuild_case_list(self) -> None:
-        """重建左侧 case 导航列表，已通过的标 ✓。"""
-        self._case_list.blockSignals(True)
-        self._case_list.clear()
-        for m in self._manifests:
-            label = f"{'✓' if m.case_id in self._approved_ids else '○'}  {m.case_id}"
-            item = QListWidgetItem(label)
-            item.setData(1, m.case_id)
-            self._case_list.addItem(item)
-        self._case_list.blockSignals(False)
-
-    def _on_case_list_select(self, row: int) -> None:
-        """点击列表项跳转到对应 case。"""
-        if row < 0 or row >= len(self._manifests):
-            return
-        if row == self._current_index:
-            return
-        # 保存当前状态到回退历史
-        selections = self._collect_selections()
-        if selections is not None:
-            self._back_history.append({
-                "index": self._current_index,
-                "selections": selections,
-                "scene": self._scene_desc_edit.toPlainText().strip(),
-            })
-        self._current_index = row
-        self._show_case(row)
-
-    def update_case_results(self, results: list) -> None:
-        """增量更新：合并新的打标结果到已有审核队列。"""
-        for r in results:
-            manifest = r["manifest"]
-            ai_result = r.get("ai_result", {})
-            cid = manifest.case_id
-            # 更新或添加
-            existing = False
-            for i, m in enumerate(self._manifests):
-                if m.case_id == cid:
-                    self._manifests[i] = manifest
-                    self._tagging_results[cid] = ai_result
-                    existing = True
-                    break
-            if not existing:
-                self._manifests.append(manifest)
-                self._tagging_results[cid] = ai_result
-                if cid in self._approved_ids:
-                    self._approved_ids.discard(cid)
-        self._rebuild_case_list()
-        if self._current_index < len(self._manifests):
-            self._show_case(self._current_index)
-        else:
-            self._show_case(0)
 
     def _advance(self) -> None:
         """切换到下一个待审核 case。"""
         self._current_index += 1
         self._show_case(self._current_index)
-        self._rebuild_case_list()
 
     def advance_after_approval(self) -> None:
         """父窗口写回成功后，正式推进到下一条 case。"""
