@@ -49,10 +49,10 @@ def _manifest_to_case_row(manifest: CaseManifest) -> ConfirmedCaseRow:
     )
 
 
-def _generate_with_retry(provider, context, concurrency: dict):
+def _generate_with_retry(provider, context, concurrency: dict, event_callback=None):
     """对 GUI 打标使用的 provider 调用加上重试逻辑。
 
-    只有临时错误（网络超时、5xx）才重试；欠费/Key错等永久错误直接抛出。
+    网络超时、5xx、AI 返回空结果均触发重试；欠费/Key错等永久错误直接抛出。
     """
     max_retries = concurrency.get("max_retries", 3)
     delay = concurrency.get("retry_backoff_seconds", 2)
@@ -61,12 +61,24 @@ def _generate_with_retry(provider, context, concurrency: dict):
     last_error = None
     for attempt in range(max_retries + 1):
         try:
-            return provider.generate(context)
+            result = provider.generate(context)
+            if not result.structured_tags and not result.multi_select_tags and not result.scene_description:
+                raise RuntimeError("AI 返回空结果")
+            return result
         except Exception as exc:
             last_error = exc
             msg = str(exc)
             if "不可重试" in msg:
                 raise
+            if "AI 返回空结果" in msg and event_callback is not None:
+                event_callback(
+                    PipelineEvent(
+                        case_id=context.parsed_metadata.get("case_id", ""),
+                        stage=RuntimeStage.TAGGING_RUNNING,
+                        event_type="info",
+                        message=f"AI 返回空结果，第 {attempt + 2}/{max_retries + 1} 次重试",
+                    )
+                )
             if attempt >= max_retries:
                 raise
             time.sleep(current_delay)
@@ -237,7 +249,7 @@ def run_batch_tagging(
                         progress_total=total_to_tag,
                     )
                 )
-                ai_f = ai_pool.submit(_generate_with_retry, provider, context, concurrency)
+                ai_f = ai_pool.submit(_generate_with_retry, provider, context, concurrency, event_callback)
                 ai_futures[ai_f] = manifest
 
             for ai_f in as_completed(ai_futures):
