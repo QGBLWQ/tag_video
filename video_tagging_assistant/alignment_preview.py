@@ -106,7 +106,6 @@ def _probe_video_stream(video_path: Path, ffprobe_exe: str) -> None:
         check=True,
         capture_output=True,
         text=True,
-        timeout=30,
     )
     stream_text = result.stdout.strip()
     if not stream_text:
@@ -200,7 +199,6 @@ def build_dji_preview_frames(
             str(output_pattern),
         ],
         check=True,
-        timeout=30,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

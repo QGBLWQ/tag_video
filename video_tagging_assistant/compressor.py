@@ -42,7 +42,7 @@ def compress_video(task: VideoTask, output_dir: Path, compression_config: Dict) 
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=int(compression_config.get("timeout_seconds", 300)),
+
     )
 
     return CompressedArtifact(
