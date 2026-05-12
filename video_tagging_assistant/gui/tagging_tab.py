@@ -191,6 +191,7 @@ class TaggingTab(QWidget):
         layout.addLayout(case_header)
         self._case_list = QListWidget()
         self._case_list.setMaximumHeight(160)
+        layout.addWidget(self._case_list)
 
         # 模式选择
         mode_row = QHBoxLayout()
