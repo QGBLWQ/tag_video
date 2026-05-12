@@ -19,6 +19,8 @@ def build_ffmpeg_command(source: Path, target: Path, compression_config: Dict) -
         "-y",
         "-i",
         str(source),
+        "-t",
+        "30",
         "-vf",
         f"scale={width}:-2",
         "-r",
@@ -69,7 +71,8 @@ def compress_video(
             time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
             if time_match and duration_sec > 0 and progress_cb is not None:
                 current_sec = _parse_ffmpeg_time(time_match.group(1))
-                pct = min(int(current_sec / duration_sec * 100), 99)
+                effective_dur = min(duration_sec, 30)
+                pct = min(int(current_sec / effective_dur * 100), 99)
                 progress_cb(pct, task.case_id)
     finally:
         proc.wait()
