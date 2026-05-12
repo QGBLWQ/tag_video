@@ -378,6 +378,16 @@ def load_get_list_manifests(
 
     message = ""
 
+    # 从目录读取 DJI 视频（需要在检查全 R 之前，用于比对）
+    normal_files = sorted(
+        [f for f in dji_nomal_dir.iterdir() if f.is_file()],
+        key=lambda f: f.name,
+    ) if dji_nomal_dir.exists() else []
+    night_files = sorted(
+        [f for f in dji_night_dir.iterdir() if f.is_file()],
+        key=lambda f: f.name,
+    ) if dji_night_dir.exists() else []
+
     # 检查是否全部 case 已处理完（所有非空行状态=R）
     if "处理状态" in headers:
         all_done = True
@@ -391,8 +401,22 @@ def load_get_list_manifests(
                     all_done = False
                     break
         if has_content and all_done:
+            # 检查 DJI 目录是否有新数据
+            current_normals = set()
+            if "Action5Pro_Nomal" in headers:
+                for row_index in range(3, sheet.max_row + 1):
+                    n = str(sheet.cell(row_index, headers["Action5Pro_Nomal"]).value or "").strip()
+                    if n:
+                        current_normals.add(n)
+            dir_normals = {f.name for f in normal_files}
+
+            if current_normals == dir_normals:
+                # DJI 目录和 xlsm 完全一致 → 无新数据
+                message = "目前 case 已全部完成，请导入新数据"
+                return [], message
+
+            # 有新数据 → 清空旧数据，更新日期
             message = "上轮 case 全部处理完毕，正在导入最新 case"
-            # 清空 DJI 和 RK_raw 列，更新日期
             wb = load_workbook(workbook_path, keep_vba=True)
             ws = wb[source_sheet]
             h = _header_map_for_row(ws, 2)
@@ -408,16 +432,6 @@ def load_get_list_manifests(
             ws.cell(1, 2).value = datetime.now().strftime("%Y%m%d")
             wb.save(workbook_path)
             created_date = str(ws.cell(1, 2).value or "").strip()
-
-    # 从目录读取 DJI 视频，按名称排序，与 xlsm 有效行一一对应
-    normal_files = sorted(
-        [f for f in dji_nomal_dir.iterdir() if f.is_file()],
-        key=lambda f: f.name,
-    ) if dji_nomal_dir.exists() else []
-    night_files = sorted(
-        [f for f in dji_night_dir.iterdir() if f.is_file()],
-        key=lambda f: f.name,
-    ) if dji_night_dir.exists() else []
 
     # 判断是否已有存储的 DJI 文件名：有 → 全从 xlsm 读；无 → 扫目录
     has_stored = (
