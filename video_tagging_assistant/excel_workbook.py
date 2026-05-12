@@ -697,6 +697,14 @@ def upsert_create_record_row(
                 break
     if target_row is None:
         target_row = sheet.max_row + 1
+        # 按 case_id 字典序找到正确插入位置，避免乱序审批导致行顺序错乱
+        if case_id_column is not None:
+            for row_index in range(2, sheet.max_row + 1):
+                existing = str(sheet.cell(row_index, case_id_column).value or "").strip()
+                if existing and case_id < existing:
+                    target_row = row_index
+                    sheet.insert_rows(target_row)
+                    break
 
     vs_nomal = f"{server_case}\\{case_id}_{manifest.vs_normal_path.name}"
     vs_night = f"{server_case}\\{case_id}_night_{manifest.vs_night_path.name}"
@@ -722,6 +730,13 @@ def upsert_create_record_row(
     for col_name, value in data.items():
         if col_name in headers:
             sheet.cell(row=target_row, column=headers[col_name]).value = value
+
+    # 插入行后重编号"序号"列，保证顺序正确
+    seq_col = headers.get("序号")
+    if seq_col is not None and case_id_column is not None:
+        for ri in range(2, sheet.max_row + 1):
+            if str(sheet.cell(ri, case_id_column).value or "").strip():
+                sheet.cell(row=ri, column=seq_col).value = str(ri - 1)
 
     workbook.save(workbook_path)
 

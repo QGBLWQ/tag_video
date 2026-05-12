@@ -226,7 +226,16 @@ class ReviewTab(QWidget):
         """增量追加单个 case 到审核队列。"""
         self._manifests.append(manifest)
         self._tagging_results[manifest.case_id] = ai_result
-        # 无论当前在哪，都刷新显示以更新进度计数
+        self._show_case(self._current_index)
+        self._sync_action_buttons()
+
+    def update_case_results(self, results: list) -> None:
+        """审核页已开放时，用新的打标结果更新已有 case 的 AI 数据。"""
+        for r in results:
+            cid = r["manifest"].case_id
+            self._tagging_results[cid] = r.get("ai_result", {})
+            # 重新加载后被覆盖，清除已通过状态
+            self._approved_ids.discard(cid)
         self._show_case(self._current_index)
         self._sync_action_buttons()
 

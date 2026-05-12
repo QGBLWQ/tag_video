@@ -232,6 +232,11 @@ class MainWindow(QMainWindow):
 
         self._pending_tagging_results = list(results)
         self._tagging_finished = True
+
+        if self._review_loaded:
+            self._review_tab.update_case_results(results)
+            return
+
         self._maybe_enter_review()
 
     def _maybe_enter_review(self) -> None:
