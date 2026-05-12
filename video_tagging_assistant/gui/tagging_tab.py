@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -180,11 +180,17 @@ class TaggingTab(QWidget):
         wb_row.addWidget(self._load_btn)
         layout.addLayout(wb_row)
 
-        # Case 列表（只读展示）
+        # Case 列表（可勾选，默认全选）
+        case_header = QHBoxLayout()
+        case_header.addWidget(QLabel("本批 Case 列表："))
+        case_header.addStretch()
+        self._select_all_btn = QPushButton("全选")
+        self._deselect_all_btn = QPushButton("取消全选")
+        case_header.addWidget(self._select_all_btn)
+        case_header.addWidget(self._deselect_all_btn)
+        layout.addLayout(case_header)
         self._case_list = QListWidget()
         self._case_list.setMaximumHeight(160)
-        layout.addWidget(QLabel("本批 Case 列表："))
-        layout.addWidget(self._case_list)
 
         # 模式选择
         mode_row = QHBoxLayout()
@@ -232,6 +238,8 @@ class TaggingTab(QWidget):
         self._load_btn.clicked.connect(self._load_cases_from_workbook)
         self._start_btn.clicked.connect(self._start_tagging)
         self._auto_mode_check.toggled.connect(self._sync_auto_mode_widgets)
+        self._select_all_btn.clicked.connect(self._select_all_cases)
+        self._deselect_all_btn.clicked.connect(self._deselect_all_cases)
 
     def _browse_workbook(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -269,9 +277,13 @@ class TaggingTab(QWidget):
 
         self._case_list.clear()
         for manifest in self._manifests:
-            self._case_list.addItem(
+            item = QListWidgetItem(
                 f"{manifest.case_id}  {manifest.vs_normal_path.name}"
             )
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, manifest)
+            self._case_list.addItem(item)
 
         try:
             self._dut_devices = load_dut_info(wb_path)
@@ -344,6 +356,24 @@ class TaggingTab(QWidget):
 
         return True
 
+    def _select_all_cases(self) -> None:
+        for i in range(self._case_list.count()):
+            self._case_list.item(i).setCheckState(Qt.Checked)
+
+    def _deselect_all_cases(self) -> None:
+        for i in range(self._case_list.count()):
+            self._case_list.item(i).setCheckState(Qt.Unchecked)
+
+    def _get_checked_manifests(self) -> list:
+        checked = []
+        for i in range(self._case_list.count()):
+            item = self._case_list.item(i)
+            if item.checkState() == Qt.Checked:
+                manifest = item.data(Qt.UserRole)
+                if manifest is not None:
+                    checked.append(manifest)
+        return checked
+
     def _start_tagging(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
@@ -353,13 +383,18 @@ class TaggingTab(QWidget):
         if not self._manifests:
             return
 
+        checked = self._get_checked_manifests()
+        if not checked:
+            self._on_error("未勾选任何 case，请至少勾选一个。")
+            return
+
         mode = "rerun" if self._radio_rerun.isChecked() else "cached"
         self._error_list.clear()
         if not self._validate_start():
             return
         if self.auto_execution_enabled():
             self.auto_exec_requested.emit()
-        self._progress_bar.setMaximum(len(self._manifests))
+        self._progress_bar.setMaximum(len(checked))
         self._progress_bar.setValue(0)
         self._log_panel.clear()
         self._start_btn.setEnabled(False)
@@ -372,7 +407,7 @@ class TaggingTab(QWidget):
             except TypeError:
                 pass  # already disconnected
 
-        self._worker = _TaggingWorker(self._config, self._manifests, mode)
+        self._worker = _TaggingWorker(self._config, checked, mode)
         self._worker.progress.connect(self._on_progress)
         self._worker.log_msg.connect(self._log_panel.append)
         self._worker.error.connect(self._on_error)
