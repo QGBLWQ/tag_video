@@ -42,6 +42,7 @@ class _TaggingWorker(QThread):
     """在后台线程中加载 / 打标，避免阻塞 UI。"""
 
     progress = pyqtSignal(int, int, str)   # (current, total, current_file)
+    compression_progress = pyqtSignal(int, str)  # (percent, case_id)
     log_msg = pyqtSignal(str)              # 日志消息
     error = pyqtSignal(str)                # 错误描述
     finished = pyqtSignal(list)            # list of result dicts
@@ -85,8 +86,9 @@ class _TaggingWorker(QThread):
             from datetime import datetime
             ts = datetime.now().strftime("%H:%M:%S")
             log = f"{ts}  {event.case_id}  {cn_msg}"
-            # 只有 AI 打标完成才更新进度条
-            if msg == "tagged":
+            if msg == "compress_progress":
+                self.compression_progress.emit(event.progress_current or 0, event.case_id)
+            elif msg == "tagged":
                 self.progress.emit(event.progress_current or 0, total_val, log)
             else:
                 self.log_msg.emit(log)
@@ -220,6 +222,12 @@ class TaggingTab(QWidget):
         self._current_file_label = QLabel("")
         layout.addWidget(self._progress_bar)
         layout.addWidget(self._current_file_label)
+
+        self._compress_bar = QProgressBar()
+        self._compress_bar.setValue(0)
+        self._compress_label = QLabel("")
+        layout.addWidget(self._compress_bar)
+        layout.addWidget(self._compress_label)
 
         # 执行日志面板
         layout.addWidget(QLabel("执行日志："))
@@ -397,12 +405,15 @@ class TaggingTab(QWidget):
             self.auto_exec_requested.emit()
         self._progress_bar.setMaximum(len(checked))
         self._progress_bar.setValue(0)
+        self._compress_bar.setValue(0)
+        self._compress_label.setText("")
         self._log_panel.clear()
         self._start_btn.setEnabled(False)
 
         if self._worker is not None:
             try:
                 self._worker.progress.disconnect()
+                self._worker.compression_progress.disconnect()
                 self._worker.error.disconnect()
                 self._worker.finished.disconnect()
             except TypeError:
@@ -410,6 +421,7 @@ class TaggingTab(QWidget):
 
         self._worker = _TaggingWorker(self._config, checked, mode)
         self._worker.progress.connect(self._on_progress)
+        self._worker.compression_progress.connect(self._on_compress_progress)
         self._worker.log_msg.connect(self._log_panel.append)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_finished)
@@ -421,6 +433,10 @@ class TaggingTab(QWidget):
         self._progress_bar.setValue(current)
         self._current_file_label.setText(filename)
         self._log_panel.append(filename)
+
+    def _on_compress_progress(self, percent: int, case_id: str) -> None:
+        self._compress_bar.setValue(percent)
+        self._compress_label.setText(f"压缩 {case_id}: {percent}%")
 
     def _on_error(self, message: str) -> None:
         item = QListWidgetItem(message)

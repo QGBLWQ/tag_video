@@ -74,6 +74,21 @@ def _generate_with_retry(provider, context, concurrency: dict):
     raise last_error
 
 
+def _make_compress_cb(case_id: str, event_callback):
+    def _cb(pct: int, cid: str) -> None:
+        event_callback(
+            PipelineEvent(
+                case_id=case_id,
+                stage=RuntimeStage.TAGGING_RUNNING,
+                event_type="info",
+                message="compress_progress",
+                progress_current=pct,
+                progress_total=100,
+            )
+        )
+    return _cb
+
+
 _DEFAULT_COMPRESSION = {
     "width": 1280,
     "video_bitrate": "1500k",
@@ -162,7 +177,10 @@ def run_batch_tagging(
         for manifest in to_tag:
             task = _manifest_to_video_task(manifest)
             tasks_by_id[manifest.case_id] = task
-            f = compress_pool.submit(compressor, task, compressed_dir, compression_config)
+            f = compress_pool.submit(
+                compressor, task, compressed_dir, compression_config,
+                _make_compress_cb(manifest.case_id, event_callback),
+            )
             compress_futures[f] = manifest
             event_callback(
                 PipelineEvent(
