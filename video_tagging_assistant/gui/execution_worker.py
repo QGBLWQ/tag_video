@@ -135,22 +135,23 @@ class ExecutionWorker(QThread):
                     self.status_changed.emit(manifest.case_id, "move", "failed", str(exc))
 
     def _upload_loop(self) -> None:
-        """独立线程消费上传队列，并持续上报进度。"""
-        while not self._abort.is_set():
-            item = self._upload_queue.get()
-            if item is _SENTINEL:
-                break
-            manifest = item
+        """用线程池并发上传，充分利用千兆带宽。"""
+        upload_concurrency = int(self._config.get("upload_concurrency", 2))
+        upload_pool = ThreadPoolExecutor(max_workers=upload_concurrency)
+        pending_uploads: dict = {}
+
+        def _make_upload_cb(manifest):
+            def _cb(step, current, total, filename, cid=manifest.case_id):
+                if not self._abort.is_set():
+                    self.upload_progress.emit(cid, current, total, filename)
+            return _cb
+
+        def _do_upload(manifest):
             if self._abort.is_set():
-                break
+                return
             self.status_changed.emit(manifest.case_id, "upload", "started", "")
             try:
-                def _cb(step, current, total, filename, cid=manifest.case_id):
-                    if not self._abort.is_set():
-                        self.upload_progress.emit(cid, current, total, filename)
-
-                upload_case(manifest, self._config, progress_cb=_cb)
-                # 先标记 R，再通知完成
+                upload_case(manifest, self._config, progress_cb=_make_upload_cb(manifest))
                 try:
                     from video_tagging_assistant.excel_workbook import mark_row_processed
                     workbook_path = Path(self._config.get("workbook_path", ""))
@@ -158,9 +159,29 @@ class ExecutionWorker(QThread):
                         mark_row_processed(workbook_path, "获取列表", manifest.row_index)
                 except Exception as exc:
                     self.status_changed.emit(manifest.case_id, "upload", "completed", f"标记R失败: {exc}")
-                    continue
+                    return
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "completed", "")
             except Exception as exc:
                 if not self._abort.is_set():
                     self.status_changed.emit(manifest.case_id, "upload", "failed", str(exc))
+
+        try:
+            while not self._abort.is_set():
+                item = self._upload_queue.get()
+                if item is _SENTINEL:
+                    break
+                manifest = item
+                f = upload_pool.submit(_do_upload, manifest)
+                pending_uploads[f] = manifest
+                # 清理已完成的
+                done = [f for f in pending_uploads if f.done()]
+                for f in done:
+                    pending_uploads.pop(f, None)
+        finally:
+            upload_pool.shutdown(wait=True)
+            # 消费队列中剩余（哨兵之后可能还有）
+            while not self._upload_queue.empty():
+                item = self._upload_queue.get()
+                if item is not _SENTINEL:
+                    _do_upload(item)
