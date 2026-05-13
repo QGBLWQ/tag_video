@@ -27,6 +27,7 @@ class ExecutionTab(QWidget):
         self._manifests: dict = {}
         self._retry_buttons: dict = {}
         self._upload_bars: dict = {}  # case_id -> (QProgressBar, QLabel)
+        self._pull_bars: dict = {}   # case_id -> (QProgressBar, QLabel)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -38,11 +39,10 @@ class ExecutionTab(QWidget):
         layout.addWidget(self._queue_list)
 
         layout.addWidget(QLabel("Pull 进度："))
-        self._pull_bar = QProgressBar()
-        self._pull_bar.setValue(0)
-        self._pull_label = QLabel("")
-        layout.addWidget(self._pull_bar)
-        layout.addWidget(self._pull_label)
+        self._pull_container = QVBoxLayout()
+        layout.addLayout(self._pull_container)
+        self._pull_placeholder = QLabel("  （暂无 pull 任务）")
+        self._pull_container.addWidget(self._pull_placeholder)
 
         layout.addWidget(QLabel("Upload 进度："))
         self._upload_container = QVBoxLayout()
@@ -66,11 +66,14 @@ class ExecutionTab(QWidget):
     def on_pull_progress(
         self, case_id: str, current: int, total: int, message: str
     ) -> None:
-        """更新 pull 进度条。"""
+        """动态创建/更新 per-case pull 进度条。"""
+        if case_id not in self._pull_bars:
+            self._ensure_pull_bar(case_id)
+        bar, label = self._pull_bars[case_id]
         if total > 0:
-            self._pull_bar.setMaximum(total)
-        self._pull_bar.setValue(current)
-        self._pull_label.setText(f"{case_id}: {message}")
+            bar.setMaximum(total)
+        bar.setValue(current)
+        label.setText(f"{case_id}: {message}")
         item = self._find_item(case_id)
         if item:
             item.setText(f"● {case_id}  pull {message}")
@@ -102,7 +105,10 @@ class ExecutionTab(QWidget):
         if status == "started":
             item.setText(f"[ ] {case_id}  {step} 进行中")
         elif status == "completed":
-            if step == "upload":
+            if step == "pull":
+                self._remove_pull_bar(case_id)
+                item.setText(f"[ ] {case_id}  {step} 完成，等待下一步")
+            elif step == "upload":
                 item.setText(f"[ok] {case_id}  已完成")
                 self._remove_upload_bar(case_id)
             else:
@@ -110,7 +116,9 @@ class ExecutionTab(QWidget):
         elif status == "failed":
             item.setText(f"[x] {case_id}  失败: {step} - {message}")
             self._add_retry_button(case_id)
-            if step == "upload":
+            if step == "pull":
+                self._remove_pull_bar(case_id)
+            elif step == "upload":
                 self._remove_upload_bar(case_id)
 
     def _find_item(self, case_id: str):
@@ -128,6 +136,30 @@ class ExecutionTab(QWidget):
         if message:
             msg += f"  - {message}"
         self._log_panel.append(msg)
+
+    def _ensure_pull_bar(self, case_id: str) -> None:
+        """为指定 case 创建 pull 进度条。"""
+        if not self._pull_bars:
+            self._pull_placeholder.hide()
+        bar = QProgressBar()
+        bar.setValue(0)
+        label = QLabel(case_id)
+        self._pull_container.addWidget(bar)
+        self._pull_container.addWidget(label)
+        self._pull_bars[case_id] = (bar, label)
+
+    def _remove_pull_bar(self, case_id: str) -> None:
+        """pull 完成后移除对应的进度条。"""
+        pair = self._pull_bars.pop(case_id, None)
+        if pair is None:
+            return
+        bar, label = pair
+        bar.hide()
+        label.hide()
+        bar.deleteLater()
+        label.deleteLater()
+        if not self._pull_bars:
+            self._pull_placeholder.show()
 
     def _ensure_upload_bar(self, case_id: str) -> None:
         """为指定 case 创建 upload 进度条。"""
