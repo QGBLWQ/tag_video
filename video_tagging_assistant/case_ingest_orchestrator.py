@@ -8,11 +8,32 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from queue import Queue
 from typing import Callable, Iterable
+
+# Windows: 让子进程脱离 cmd 控制台，避免 cmd QuickEdit 模式挂起 adb
+if sys.platform == "win32":
+    _CREATE_NO_WINDOW = 0x08000000
+else:
+    _CREATE_NO_WINDOW = 0
+
+
+def _popen(args, **kwargs):
+    """subprocess.Popen 的 wrapper，自动加 CREATE_NO_WINDOW。"""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+    return subprocess.Popen(args, **kwargs)
+
+
+def _run(args, **kwargs):
+    """subprocess.run 的 wrapper，自动加 CREATE_NO_WINDOW。"""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", _CREATE_NO_WINDOW)
+    return subprocess.run(args, **kwargs)
 
 _ADB_ERROR_MAP = {
     "device not found": "设备未连接，请检查 USB 线缆并确认 adb devices 可见",
@@ -46,7 +67,7 @@ def _translate_adb_error(error: subprocess.CalledProcessError) -> str:
 
 def _adb_list_files(adb_exe: str, remote_dir: str, timeout: int = 30) -> dict:
     """通过 adb shell ls -la 获取远端目录文件列表，返回 {filename: size_bytes}。"""
-    result = subprocess.run(
+    result = _run(
         [adb_exe, "shell", "ls", "-la", remote_dir],
         capture_output=True,
         text=True,
@@ -204,7 +225,7 @@ def _find_android_tar(adb_exe: str) -> str | None:
                       "/data/local/tmp/tar", "/data/local/tmp/busybox tar"]:
         try:
             # 先用 which 拿完整路径
-            which_result = subprocess.run(
+            which_result = _run(
                 [adb_exe, "shell", f"which {candidate.split()[0]} 2>/dev/null"],
                 capture_output=True, text=True, timeout=10,
             )
@@ -215,7 +236,7 @@ def _find_android_tar(adb_exe: str) -> str | None:
                     full_path += " " + candidate.split(" ", 1)[1]
                 return full_path
             # which 失败则尝试直接运行
-            ver_result = subprocess.run(
+            ver_result = _run(
                 [adb_exe, "shell", f"{candidate} --version 2>/dev/null"],
                 capture_output=True, text=True, timeout=10,
             )
@@ -243,7 +264,7 @@ def _find_seven_zip() -> str | None:
 def _try_native_extract(tool: str, args: list, dest: str, timeout: int = 300) -> bool:
     """调用外部解压工具，成功返回 True。"""
     try:
-        subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+        _run(args, check=True, capture_output=True, timeout=timeout)
         return True
     except Exception:
         return False
@@ -323,7 +344,7 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             start_time = time.time()
 
             tar_cmd = f"cd {remote_dir} && {android_tar} cf - ."
-            proc = subprocess.Popen(
+            proc = _popen(
                 [adb_exe, "exec-out", tar_cmd],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -406,11 +427,201 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     return extract_ok[0]
 
 
+# ═══════════════════════════════════════════════════════════
+# TCP 隧道传输：adb forward + 设备侧 nc | tar
+# ═══════════════════════════════════════════════════════════
+
+_PORT_LOCK = threading.Lock()
+_NEXT_PORT = [5555]
+
+
+def _alloc_forward_port(adb_exe: str) -> int:
+    """分配一个未被 adb forward 占用的本地端口。"""
+    with _PORT_LOCK:
+        try:
+            result = _run([adb_exe, "forward", "--list"],
+                          capture_output=True, text=True, timeout=5)
+            used = set()
+            for line in result.stdout.splitlines():
+                if "tcp:" in line:
+                    for part in line.split():
+                        if part.startswith("tcp:"):
+                            try:
+                                used.add(int(part[4:]))
+                            except ValueError:
+                                pass
+        except Exception:
+            used = set()
+
+        port = _NEXT_PORT[0]
+        while port in used:
+            port += 1
+        _NEXT_PORT[0] = port + 1
+        if _NEXT_PORT[0] > 5655:
+            _NEXT_PORT[0] = 5555
+        return port
+
+
+def _find_android_nc(adb_exe: str) -> str | None:
+    """检测设备上的 nc / busybox nc。"""
+    for candidate in ["nc", "busybox nc", "toybox nc",
+                      "/data/local/tmp/busybox nc"]:
+        try:
+            first = candidate.split()[0]
+            r = _run([adb_exe, "shell", f"which {first} 2>/dev/null"],
+                     capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                full = r.stdout.strip()
+                if " " in candidate:
+                    full += " " + candidate.split(" ", 1)[1]
+                return full
+        except Exception:
+            pass
+    return None
+
+
+def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
+                  progress_cb, remote_files: dict) -> bool:
+    """adb forward + 设备侧 tar | nc 隧道传输，流式解压到目标目录。
+
+    步骤:
+      1. 查找设备 nc/tar
+      2. 分配本地端口，adb forward tcp:PORT tcp:PORT
+      3. 设备侧 shell 起: cd remote_dir && tar cf - . | nc -l -p PORT
+      4. PC 侧 socket 连 127.0.0.1:PORT，收字节流，边收边解压
+      5. 清理 forward 和 shell 进程
+    成功返回 True，失败返回 False（让上层回退）。
+    """
+    import socket as _socket
+
+    android_tar = _find_android_tar(adb_exe)
+    android_nc = _find_android_nc(adb_exe)
+    if not android_tar or not android_nc:
+        if progress_cb:
+            progress_cb(0, len(remote_files),
+                        f"设备缺少 tar/nc (tar={bool(android_tar)}, nc={bool(android_nc)})，降级")
+        return False
+
+    port = _alloc_forward_port(adb_exe)
+    total_est = sum(remote_files.values())
+    total_files = len(remote_files)
+
+    if progress_cb:
+        progress_cb(0, total_files, f"TCP 隧道 (port {port})")
+
+    # 建立 forward
+    try:
+        _run([adb_exe, "forward", f"tcp:{port}", f"tcp:{port}"],
+             capture_output=True, timeout=10, check=True)
+    except Exception as e:
+        if progress_cb:
+            progress_cb(0, total_files, f"adb forward 失败: {e}，降级")
+        return False
+
+    # 设备侧起 shell：先 nc listen，再 tar 压入管道
+    shell_cmd = (
+        f"cd {remote_dir} && "
+        f"{android_tar} cf - . | {android_nc} -l -p {port}"
+    )
+    shell_proc = _popen(
+        [adb_exe, "shell", shell_cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    sock = None
+    ok = False
+    try:
+        # 等 nc 真正进入 listen 状态，重试连接
+        deadline = time.time() + 10
+        last_exc = None
+        while time.time() < deadline:
+            try:
+                sock = _socket.create_connection(("127.0.0.1", port), timeout=2)
+                break
+            except (ConnectionRefusedError, _socket.timeout, OSError) as e:
+                last_exc = e
+                time.sleep(0.1)
+        if sock is None:
+            if progress_cb:
+                progress_cb(0, total_files, f"连接失败: {last_exc}，降级")
+            return False
+
+        sock.settimeout(timeout)
+
+        # 边收边写临时 tar 文件，收完再解压（和现有 _pull_via_tar 一致）
+        import os as _os
+        import tempfile as _tmp
+        tmp_fd, tmp_path = _tmp.mkstemp(suffix=".tar")
+        total_read = 0
+        start = time.time()
+        try:
+            with _os.fdopen(tmp_fd, "wb") as f:
+                while True:
+                    try:
+                        chunk = sock.recv(16 * 1024 * 1024)
+                    except _socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    total_read += len(chunk)
+                    if progress_cb and total_est > 0:
+                        elapsed = max(time.time() - start, 0.001)
+                        mb = total_read / (1024 * 1024)
+                        speed = mb / elapsed
+                        pct = min(int(total_read / total_est * 100), 99)
+                        progress_cb(pct, 100, f"TCP {pct}% {mb:.0f}MB {speed:.1f}MB/s")
+
+            if total_read < 1024:
+                if progress_cb:
+                    progress_cb(0, total_files, f"TCP 流仅 {total_read}B，降级")
+                try:
+                    _os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return False
+
+            # 解压
+            if progress_cb:
+                progress_cb(total_files * 0.9, total_files, "TCP 接收完成，解压中...")
+            _extract_tar_file(tmp_path, dest, progress_cb, total_files)
+            ok = True
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+    except Exception as e:
+        if progress_cb:
+            progress_cb(0, total_files, f"TCP 异常: {e}，降级")
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if shell_proc.poll() is None:
+            try:
+                shell_proc.kill()
+                shell_proc.wait(timeout=3)
+            except Exception:
+                pass
+        # 清理 forward
+        try:
+            _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
+                 capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    return ok
+
+
 def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, total_bytes: int = 0) -> None:
     """adb pull 整目录，实时显示百分比和速率。"""
     remote_path = f"{remote_dir}/."
-    proc = subprocess.Popen(
+    proc = _popen(
         [adb_exe, "pull", remote_path, dest],
         stderr=subprocess.PIPE,
         text=True,
@@ -471,17 +682,39 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
         return
 
     total_bytes = sum(remote_files.values())
-    pull_mode = config.get("pull_mode", "adb")
+    pull_mode = config.get("pull_mode", "tcp")
 
     if progress_cb:
-        mode_label = "tar 流式" if pull_mode == "tar" else "adb pull"
+        mode_label = {"tcp": "TCP 隧道", "tar": "tar 流式", "adb": "adb pull"}.get(
+            pull_mode, pull_mode)
         progress_cb(0, len(remote_files), f"传输中 - {mode_label} ({missing} 文件)")
 
-    if pull_mode == "adb":
-        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb,
-                      total_bytes=total_bytes)
-    elif not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
-                           progress_cb, remote_files, missing):
+    # 按配置模式尝试，失败自动降级到 adb pull（该 case 独立降级）
+    success = False
+    if pull_mode == "tcp":
+        try:
+            success = _pull_via_tcp(adb_exe, remote_dir, str(dest), timeout,
+                                     progress_cb, remote_files)
+        except Exception as exc:
+            if progress_cb:
+                progress_cb(0, len(remote_files), f"TCP 异常: {exc}，降级 adb pull")
+    elif pull_mode == "tar":
+        # tar 模式失败单独重试一次
+        for attempt in range(2):
+            try:
+                success = _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
+                                         progress_cb, remote_files, missing)
+                if success:
+                    break
+                if progress_cb and attempt == 0:
+                    progress_cb(0, len(remote_files), "tar 失败，重试一次")
+            except Exception as exc:
+                if progress_cb:
+                    progress_cb(0, len(remote_files),
+                                f"tar 异常: {exc} (尝试 {attempt+1}/2)")
+
+    if not success:
+        # 最终回退：adb pull（该 case 独立走，不影响其他 case）
         _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb,
                       total_bytes=total_bytes)
 
@@ -575,46 +808,66 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
 def _robocopy_available() -> bool:
     """检查 robocopy 是否可用。"""
     try:
-        subprocess.run(["robocopy", "/?"], capture_output=True, timeout=5)
+        _run(["robocopy", "/?"], capture_output=True, timeout=5)
         return True
     except Exception:
         return False
 
 
 def _robocopy_with_progress(src: str, dest: str, total_files: int, progress_cb=None) -> None:
-    """用 robocopy 复制目录树，解析输出获取进度与速率。"""
-    proc = subprocess.Popen(
+    """用 robocopy 复制目录树，独立线程轮询目标目录文件数报告进度。
+
+    robocopy /MT 多线程模式不输出 'New File' 行，只能轮询目标目录大小推算进度。
+    """
+    proc = _popen(
         ["robocopy", src, dest, "/E", "/MT:32", "/R:3", "/W:5",
-         "/NP", "/NDL", "/NJH", "/NJS"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+         "/NP", "/NDL", "/NJH", "/NJS", "/NFL"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
-    copied = 0
-    last_speed = ""
+    # 后台线程轮询目标目录，统计文件数和大小
+    stop_flag = threading.Event()
+    start_time = time.time()
+    last_bytes = [0]
+
+    def _poll_progress():
+        from pathlib import Path as _P
+        dest_path = _P(dest)
+        while not stop_flag.is_set():
+            if dest_path.exists():
+                try:
+                    files_now = sum(1 for _ in dest_path.rglob("*") if _.is_file())
+                    bytes_now = sum(f.stat().st_size for f in dest_path.rglob("*") if f.is_file())
+                    elapsed = max(time.time() - start_time, 0.001)
+                    delta = bytes_now - last_bytes[0]
+                    last_bytes[0] = bytes_now
+                    mb = bytes_now / (1024 * 1024)
+                    inst_speed = (delta / 0.5) / (1024 * 1024) if elapsed > 0.5 else mb / elapsed
+                    if progress_cb:
+                        progress_cb("upload", files_now, total_files,
+                                    f"{files_now}/{total_files} {mb:.0f}MB {inst_speed:.1f}MB/s")
+                except OSError:
+                    pass
+            stop_flag.wait(0.5)
+
+    poller = threading.Thread(target=_poll_progress, daemon=True, name="robocopy-poll")
+    poller.start()
+
     try:
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("New File"):
-                copied += 1
-                if progress_cb:
-                    progress_cb("upload", copied, total_files, f"{copied}/{total_files} {last_speed}")
-            elif "Bytes" in line and ("sec" in line.lower() or "min" in line.lower()):
-                last_speed = line.strip()
-                if progress_cb:
-                    progress_cb("upload", copied, total_files, f"{copied}/{total_files} {last_speed}")
         proc.wait(timeout=3600)
     finally:
+        stop_flag.set()
+        poller.join(timeout=1)
         if proc.returncode is None:
             proc.kill()
             proc.wait()
     if proc.returncode >= 8:
         raise RuntimeError(f"robocopy 失败 (code={proc.returncode})")
+    # 最终一次进度报告（确保到达 100%）
+    if progress_cb:
+        progress_cb("upload", total_files, total_files,
+                    f"{total_files}/{total_files} 完成")
 
 
 def upload_case(manifest, config: dict, progress_cb=None) -> None:

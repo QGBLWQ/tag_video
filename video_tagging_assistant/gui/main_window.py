@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QTabWidget,
     QTableView,
@@ -22,6 +23,7 @@ from PyQt5.QtWidgets import (
 )
 
 from video_tagging_assistant.excel_workbook import (
+    find_written_dji_names,
     load_dut_info,
     load_rk_raw_values,
     upsert_create_record_row,
@@ -78,12 +80,29 @@ class MainWindow(QMainWindow):
         self._tabs.setTabEnabled(2, False)
         self._tabs.setTabEnabled(3, False)
 
-        self.setCentralWidget(self._tabs)
+        # 顶部 ADB 状态栏 + tabs
+        self._adb_status_label = QLabel("ADB 状态: 检测中...")
+        self._adb_status_label.setStyleSheet("padding: 4px 8px; background: #f0f0f0;")
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
+        container_layout.addWidget(self._adb_status_label)
+        container_layout.addWidget(self._tabs)
+        self.setCentralWidget(container)
+
+        # 启动 ADB 状态服务
+        from video_tagging_assistant.gui.adb_status_service import AdbStatusService
+        self._adb_status = AdbStatusService(
+            adb_exe=config.get("adb_exe", "adb"), parent=self,
+        )
+        self._adb_status.status_changed.connect(self._on_adb_status_changed)
 
         self._tagging_tab.batch_loaded.connect(self._on_batch_loaded)
         self._tagging_tab.tagging_complete.connect(self._on_tagging_complete)
         self._tagging_tab.auto_exec_requested.connect(self._on_auto_exec_requested)
         self._alignment_tab.alignment_state_changed.connect(self._on_alignment_state_changed)
+        self._alignment_tab.refresh_requested.connect(self._on_alignment_refresh_requested)
         self._review_tab.case_approved.connect(self._on_case_approved)
         self._worker.status_changed.connect(self._execution_tab.on_status_changed)
         self._worker.upload_progress.connect(self._execution_tab.on_upload_progress)
@@ -259,6 +278,46 @@ class MainWindow(QMainWindow):
             result["manifest"].case_id: result["ai_result"]
             for result in remaining_results
         }
+
+        # 检测"已写入但未执行"的 case：DJI 文件名已在"创建记录"VS_Nomal 中，
+        # 但"获取列表"处理状态未 R（manifests 已排除 R 行，所以这里全都是未 R 的）
+        written_names = find_written_dji_names(self._workbook_path)
+        already_written = [m for m in manifests
+                           if m.vs_normal_path.name in written_names]
+        if already_written:
+            lines = "\n".join(f"  • {m.case_id}  ({m.vs_normal_path.name})"
+                              for m in already_written)
+            reply = QMessageBox.question(
+                self,
+                "检测到已写入记录的 case",
+                (f"以下 {len(already_written)} 个 case 在"
+                 f"'创建记录'中已存在记录，但未标记为已执行：\n\n"
+                 f"{lines}\n\n"
+                 "是否直接加入执行队列（跳过重新审核）？"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                # 这些 case 直接入队，不进审核
+                for manifest in already_written:
+                    if self._auto_execution_enabled and self._locked_device_info:
+                        self._apply_device_info_to_manifest(
+                            manifest, self._locked_device_info)
+                    if manifest.case_id not in self._enqueued_case_ids:
+                        self._tabs.setTabEnabled(3, True)
+                        self._execution_tab.add_case(deepcopy(manifest))
+                        self._enqueued_case_ids.add(manifest.case_id)
+                    self._approved_case_ids.add(manifest.case_id)
+                # 从审核队列剔除
+                skip_ids = {m.case_id for m in already_written}
+                manifests = [m for m in manifests if m.case_id not in skip_ids]
+                tagging_results = {cid: r for cid, r in tagging_results.items()
+                                   if cid not in skip_ids}
+
+        if not manifests:
+            # 全部被直接入队，不需要再进审核
+            return
+
         dut_devices = []
         try:
             dut_devices = load_dut_info(self._workbook_path)
@@ -315,8 +374,52 @@ class MainWindow(QMainWindow):
             self._execution_tab.add_case(deepcopy(manifest))
             self._enqueued_case_ids.add(manifest.case_id)
 
+    def _on_adb_status_changed(self, connected: bool, serial: str) -> None:
+        """ADB 设备状态变化时更新顶部状态栏。"""
+        if connected:
+            self._adb_status_label.setText(f"ADB 状态: 🟢 已连接  (序列号: {serial})")
+            self._adb_status_label.setStyleSheet(
+                "padding: 4px 8px; background: #e8f5e9; color: #1b5e20;")
+        else:
+            self._adb_status_label.setText("ADB 状态: 🔴 未连接 — 请检查 USB 线缆")
+            self._adb_status_label.setStyleSheet(
+                "padding: 4px 8px; background: #ffebee; color: #b71c1c;")
+
+    def _on_alignment_refresh_requested(self) -> None:
+        """对齐页"刷新设备"按钮：重新扫描 RK 候选并重建对齐状态。"""
+        if not self._loaded_manifests:
+            self.statusBar().showMessage("尚未加载批次，无法刷新", 3000)
+            return
+        try:
+            rk_raw_by_row = load_rk_raw_values(
+                self._workbook_path, source_sheet="获取列表")
+            _, candidates, bad_logs = scan_rk_candidates(
+                temp_root=str(self._config.get("temp_path", "")),
+                dut_root=str(self._config.get("dut_root", "")),
+                adb_exe=str(self._config.get("adb_exe", "adb")),
+            )
+            new_state = build_alignment_batch_state(
+                manifests=self._loaded_manifests,
+                rk_raw_by_row=rk_raw_by_row,
+                candidates=candidates,
+                bad_directory_logs=bad_logs,
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(f"刷新失败: {exc}", 5000)
+            return
+        self._alignment_tab.load_batch(
+            manifests=self._loaded_manifests,
+            workbook_path=self._workbook_path,
+            writeback_workbook_path=self._workbook_path,
+            initial_state=new_state,
+        )
+        self.statusBar().showMessage(
+            f"已刷新，找到 {len(candidates)} 个 RK 候选", 3000)
+
     def closeEvent(self, event) -> None:
         """窗口关闭时优雅停止对齐预处理线程与执行线程。"""
+        if hasattr(self, "_adb_status"):
+            self._adb_status.stop()
         alignment_tab = getattr(self, "_alignment_tab", None)
         shutdown_error = None
         try:

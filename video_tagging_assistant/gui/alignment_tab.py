@@ -36,6 +36,7 @@ class AlignmentTab(QWidget):
     """第二阶段对齐页，承载 RK/DJI 人工对齐交互。"""
 
     alignment_state_changed = pyqtSignal(int, int, bool)
+    refresh_requested = pyqtSignal()
 
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
@@ -60,7 +61,13 @@ class AlignmentTab(QWidget):
         outer = QHBoxLayout(self)
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("\u5bf9\u9f50\u961f\u5217"))
+        queue_header = QHBoxLayout()
+        queue_header.addWidget(QLabel("\u5bf9\u9f50\u961f\u5217"))
+        queue_header.addStretch()
+        self._refresh_btn = QPushButton("\u5237\u65b0\u8bbe\u5907")
+        self._refresh_btn.setToolTip("\u91cd\u65b0\u626b\u63cf ADB \u8bbe\u5907\u4e0a\u7684 RK \u5019\u9009\uff08\u82e5\u521a\u8fde\u4e0a\u8bbe\u5907\u540e\u4f7f\u7528\uff09")
+        queue_header.addWidget(self._refresh_btn)
+        left.addLayout(queue_header)
         self._queue_list = QListWidget()
         left.addWidget(self._queue_list, stretch=1)
         left.addWidget(QLabel("\u65e5\u5fd7"))
@@ -113,6 +120,7 @@ class AlignmentTab(QWidget):
         QShortcut(QKeySequence("Enter"), self, self._confirm_current_case)
         self._confirm_btn.clicked.connect(self._confirm_current_case)
         self._clear_btn.clicked.connect(self._clear_current_case)
+        self._refresh_btn.clicked.connect(self.refresh_requested.emit)
 
     def load_batch(self, manifests, workbook_path: Path, writeback_workbook_path: Path, initial_state) -> None:
         """装载整批待对齐 case，并启动后台预览生成线程。"""

@@ -802,6 +802,36 @@ def write_case_txt(manifest: "CaseManifest", tag_result: TagResult) -> Path:
     return out_path
 
 
+def find_written_dji_names(workbook_path: Path) -> Set[str]:
+    """扫描"创建记录" sheet 的 VS_Nomal 列，返回所有已写入的 DJI 文件名集合。
+
+    返回的是文件名（不含路径），用于判断审核流程是否已为某 case 写过记录。
+    """
+    if not workbook_path.exists():
+        return set()
+    try:
+        workbook = load_workbook(workbook_path, keep_vba=True, data_only=True)
+    except Exception:
+        return set()
+    if "创建记录" not in workbook.sheetnames:
+        return set()
+    sheet = workbook["创建记录"]
+    headers = _header_map(sheet)
+    vs_normal_col = headers.get("VS_Nomal")
+    if vs_normal_col is None:
+        return set()
+    names: Set[str] = set()
+    for row_index in range(2, sheet.max_row + 1):
+        cell_value = str(sheet.cell(row_index, vs_normal_col).value or "").strip()
+        if not cell_value:
+            continue
+        # 取路径最后一段为文件名（兼容 Windows 反斜杠与正斜杠）
+        fname = cell_value.replace("/", "\\").split("\\")[-1]
+        if fname:
+            names.add(fname)
+    return names
+
+
 def mark_row_processed(workbook_path: Path, source_sheet: str, row_index: int) -> None:
     """将指定行的处理状态标记为 R（已完成）。"""
     workbook = load_workbook(workbook_path, keep_vba=True)
