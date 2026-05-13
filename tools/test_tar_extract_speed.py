@@ -15,7 +15,6 @@ import random
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -58,22 +57,25 @@ def find_random_test_dir() -> str:
     return chosen
 
 
-def pull_tar_to_file(remote_dir: str, output_path: str) -> tuple:
-    """adb exec-out tar → 本地文件，返回 (file_count, total_size_mb, speed_mbs)。"""
+def pull_tar_to_file(remote_dir: str, output_path: str, max_files: int = 100) -> tuple:
+    """adb exec-out tar → 本地文件（仅前 max_files 个），返回 (file_count, total_size_mb, speed_mbs)。"""
     android_tar = _find_android_tar(ADB)
     if android_tar is None:
         print("Android 设备无可用的 tar")
         sys.exit(1)
     print(f"检测到 Android tar: {android_tar}")
 
-    # 先列远端文件
+    # 先列远端文件，只取前 max_files 个
     remote_files = _adb_list_files(ADB, remote_dir)
-    total_bytes = sum(remote_files.values())
-    file_count = len(remote_files)
-    print(f"远端文件: {file_count} 个, 总大小 {_parse_size(total_bytes)}")
+    all_count = len(remote_files)
+    selected = dict(list(remote_files.items())[:max_files])
+    total_bytes = sum(selected.values())
+    file_count = len(selected)
+    print(f"远端文件: {all_count} 个 (取前 {file_count} 个), 总大小 {_parse_size(total_bytes)}")
 
-    # 拉取 tar 流
-    tar_cmd = f"cd {remote_dir} && {android_tar} cf - ."
+    # 只 tar 选中的文件
+    file_list = " ".join(selected.keys())
+    tar_cmd = f"cd {remote_dir} && {android_tar} cf - {file_list}"
     print(f"执行: adb exec-out {tar_cmd}")
     print("接收中...", end="", flush=True)
 
@@ -147,7 +149,7 @@ def main():
     print(f"\n{'='*50}")
     print("Phase 1: adb tar pull")
     print(f"{'='*50}")
-    file_count, tar_size_mb, recv_speed = pull_tar_to_file(remote_dir, tar_path)
+    file_count, tar_size_mb, recv_speed = pull_tar_to_file(remote_dir, tar_path, max_files=PULL_COUNT)
 
     # ── 复制一份 tar 文件供 7-Zip 用 ──
     tar_copy = str(tmp_dir / "test_copy.tar")
