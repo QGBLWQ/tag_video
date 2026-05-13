@@ -177,15 +177,37 @@ def main():
         file_count2 = sum(1 for _ in Path(dest2).rglob("*") if _.is_file())
         print(f"  7-Zip:      {t2:.1f}s, {speed2:.1f}MB/s, {file_count2} 文件")
 
-    # ── 测试 adb pull（整目录） ──
+    # ── 测试 adb pull（仅前 100 个文件） ──
     print(f"\n{'='*50}")
-    print("Phase 4: adb pull 整目录")
+    print("Phase 4: adb pull (前100文件)")
     print(f"{'='*50}")
     dest3 = str(tmp_dir / "adb_pull_test")
     os.makedirs(dest3, exist_ok=True)
+
+    # 在设备上创建临时目录，放入前 100 个文件
+    temp_remote = "/data/local/tmp/_pull_test_100"
+    print(f"  在设备上准备测试目录...")
+    subprocess.run([ADB, "shell", f"rm -rf {temp_remote} && mkdir -p {temp_remote}"],
+                   capture_output=True, timeout=10)
+    remote_files = _adb_list_files(ADB, remote_dir)
+    first_100 = list(remote_files.keys())[:100]
+    # 批量 cp 前 100 个文件到临时目录
+    for name in first_100:
+        subprocess.run(
+            [ADB, "shell", f"cp '{remote_dir}/{name}' '{temp_remote}/'"],
+            capture_output=True, timeout=10,
+        )
+
+    # 统计临时目录大小
+    temp_files = _adb_list_files(ADB, temp_remote)
+    adb_total_bytes = sum(temp_files.values())
+    adb_total_mb = adb_total_bytes / (1024 * 1024)
+    print(f"  测试文件: {len(temp_files)} 个, {adb_total_mb:.0f}MB")
+
+    # adb pull
     start = time.time()
     proc = subprocess.Popen(
-        [ADB, "pull", f"{remote_dir}/.", dest3],
+        [ADB, "pull", f"{temp_remote}/.", dest3],
         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
     )
     for line in proc.stderr:
@@ -194,13 +216,13 @@ def main():
             print(f"\r  {line}", end="", flush=True)
     proc.wait(timeout=600)
     adb_time = time.time() - start
-    total_bytes = sum(
-        f.stat().st_size for f in Path(dest3).rglob("*") if f.is_file()
-    )
-    adb_mb = total_bytes / (1024 * 1024)
-    adb_speed = adb_mb / adb_time if adb_time > 0 else 0
-    adb_files = sum(1 for _ in Path(dest3).rglob("*") if _.is_file())
-    print(f"\n  adb pull: {adb_time:.1f}s, {adb_speed:.1f}MB/s, {adb_mb:.0f}MB, {adb_files} 文件")
+    adb_speed = adb_total_mb / adb_time if adb_time > 0 else 0
+    adb_files = len(temp_files)
+    print(f"\n  adb pull: {adb_time:.1f}s, {adb_speed:.1f}MB/s, {adb_total_mb:.0f}MB, {adb_files} 文件")
+
+    # 清理设备临时目录
+    subprocess.run([ADB, "shell", f"rm -rf {temp_remote}"],
+                   capture_output=True, timeout=5)
 
     # ── 对比 ──
     print(f"\n{'='*50}")
@@ -213,7 +235,7 @@ def main():
         print(f"  │ tar 解压 (sys) │ {t1:.0f}s   │ {speed1:4.0f} MB/s │ {file_count1:6} │        │")
     if t2 > 0:
         print(f"  │ 7z 解压        │ {t2:.0f}s   │ {speed2:4.0f} MB/s │ {file_count2:6} │        │")
-    print(f"  │ adb pull       │ {adb_time:.0f}s   │ {adb_speed:4.0f} MB/s │ {adb_files:6} │ {adb_mb:5.0f}MB │")
+    print(f"  │ adb pull       │ {adb_time:.0f}s   │ {adb_speed:4.0f} MB/s │ {adb_files:6} │ {adb_total_mb:5.0f}MB │")
     print(f"  ├────────────────┼─────────┼────────────┼────────┼────────┤")
     tar_total = recv_time + (t1 if t1 > 0 else 0)
     print(f"  │ tar 端到端     │ {tar_total:.0f}s   │ {tar_size_mb/tar_total:4.0f} MB/s │        │        │")
