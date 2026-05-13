@@ -503,6 +503,7 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
             elapsed = max(time.time() - start_time, 0.001)
             progress_cb("upload", n, total, f"{int(n / elapsed)} f/s  {file.name}")
 
+    print(f"[COPYTREE] src={src} files={total} dest={dest_str[:80]} cb={progress_cb is not None}")
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_copy_one, f) for f in files]
         for fut in as_completed(futures):

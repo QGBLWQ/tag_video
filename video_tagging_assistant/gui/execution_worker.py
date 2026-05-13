@@ -143,7 +143,10 @@ class ExecutionWorker(QThread):
         def _make_upload_cb(manifest):
             def _cb(step, current, total, filename, cid=manifest.case_id):
                 if not self._abort.is_set():
-                    self.upload_progress.emit(cid, current, total, filename)
+                    try:
+                        self.upload_progress.emit(cid, current, total, filename)
+                    except Exception as exc:
+                        print(f"[UPLOAD_CB] emit error for {cid}: {exc}")
             return _cb
 
         def _do_upload(manifest):
