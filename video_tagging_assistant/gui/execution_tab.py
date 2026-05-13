@@ -26,20 +26,29 @@ class ExecutionTab(QWidget):
         self._worker = worker
         self._manifests: dict = {}
         self._retry_buttons: dict = {}
+        self._upload_bars: dict = {}  # case_id -> (QProgressBar, QLabel)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """初始化队列列表、日志区和重试入口。"""
+        """初始化队列列表、进度条区和日志区。"""
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel("执行队列："))
         self._queue_list = QListWidget()
         layout.addWidget(self._queue_list)
 
-        layout.addWidget(QLabel("当前进度："))
-        self._case_progress = QProgressBar()
-        self._case_progress.setValue(0)
-        layout.addWidget(self._case_progress)
+        layout.addWidget(QLabel("Pull 进度："))
+        self._pull_bar = QProgressBar()
+        self._pull_bar.setValue(0)
+        self._pull_label = QLabel("")
+        layout.addWidget(self._pull_bar)
+        layout.addWidget(self._pull_label)
+
+        layout.addWidget(QLabel("Upload 进度："))
+        self._upload_container = QVBoxLayout()
+        layout.addLayout(self._upload_container)
+        self._upload_placeholder = QLabel("  （暂无上传任务）")
+        self._upload_container.addWidget(self._upload_placeholder)
 
         layout.addWidget(QLabel("执行日志："))
         self._log_panel = QTextEdit()
@@ -57,10 +66,11 @@ class ExecutionTab(QWidget):
     def on_pull_progress(
         self, case_id: str, current: int, total: int, message: str
     ) -> None:
-        """更新 pull 进度条和队列行。"""
+        """更新 pull 进度条。"""
         if total > 0:
-            self._case_progress.setMaximum(total)
-        self._case_progress.setValue(current)
+            self._pull_bar.setMaximum(total)
+        self._pull_bar.setValue(current)
+        self._pull_label.setText(f"{case_id}: {message}")
         item = self._find_item(case_id)
         if item:
             item.setText(f"● {case_id}  pull {message}")
@@ -68,10 +78,14 @@ class ExecutionTab(QWidget):
     def on_upload_progress(
         self, case_id: str, current: int, total: int, filename: str
     ) -> None:
-        """更新上传进度条和队列行。"""
+        """动态创建/更新 per-case upload 进度条。"""
+        if case_id not in self._upload_bars:
+            self._ensure_upload_bar(case_id)
+        bar, label = self._upload_bars[case_id]
         if total > 0:
-            self._case_progress.setMaximum(total)
-        self._case_progress.setValue(current)
+            bar.setMaximum(total)
+        bar.setValue(current)
+        label.setText(f"{case_id}: {current}/{total}  {filename}")
         item = self._find_item(case_id)
         if item:
             item.setText(f"● {case_id}  upload {current}/{total}  {filename}")
@@ -90,11 +104,14 @@ class ExecutionTab(QWidget):
         elif status == "completed":
             if step == "upload":
                 item.setText(f"[ok] {case_id}  已完成")
+                self._remove_upload_bar(case_id)
             else:
                 item.setText(f"[ ] {case_id}  {step} 完成，等待下一步")
         elif status == "failed":
             item.setText(f"[x] {case_id}  失败: {step} - {message}")
             self._add_retry_button(case_id)
+            if step == "upload":
+                self._remove_upload_bar(case_id)
 
     def _find_item(self, case_id: str):
         """在队列列表中查找指定 case 对应的项。"""
@@ -111,6 +128,30 @@ class ExecutionTab(QWidget):
         if message:
             msg += f"  - {message}"
         self._log_panel.append(msg)
+
+    def _ensure_upload_bar(self, case_id: str) -> None:
+        """为指定 case 创建 upload 进度条。"""
+        if not self._upload_bars:
+            self._upload_placeholder.hide()
+        bar = QProgressBar()
+        bar.setValue(0)
+        label = QLabel(case_id)
+        self._upload_container.addWidget(bar)
+        self._upload_container.addWidget(label)
+        self._upload_bars[case_id] = (bar, label)
+
+    def _remove_upload_bar(self, case_id: str) -> None:
+        """上传完成后移除对应的进度条。"""
+        pair = self._upload_bars.pop(case_id, None)
+        if pair is None:
+            return
+        bar, label = pair
+        bar.hide()
+        label.hide()
+        bar.deleteLater()
+        label.deleteLater()
+        if not self._upload_bars:
+            self._upload_placeholder.show()
 
     def _add_retry_button(self, case_id: str) -> None:
         """为失败 case 增加一次重试按钮。"""
