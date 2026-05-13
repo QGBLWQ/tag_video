@@ -226,6 +226,62 @@ def _find_android_tar(adb_exe: str) -> str | None:
     return None
 
 
+def _find_seven_zip() -> str | None:
+    """查找 7-Zip 可执行文件路径。"""
+    import shutil as _shutil
+    candidates = [
+        "7z", "7z.exe",
+        r"C:\Program Files\7-Zip\7z.exe",
+        r"C:\Program Files (x86)\7-Zip\7z.exe",
+    ]
+    for c in candidates:
+        if _shutil.which(c):
+            return c
+    return None
+
+
+def _try_native_extract(tool: str, args: list, dest: str, timeout: int = 300) -> bool:
+    """调用外部解压工具，成功返回 True。"""
+    try:
+        subprocess.run(args, check=True, capture_output=True, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _extract_via_python_tarfile(tar_path: str, dest: str,
+                                 progress_cb, total_files: int) -> None:
+    """Python tarfile 回退方案，逐文件报告进度。"""
+    import tarfile as _tarfile
+    with _tarfile.open(tar_path, mode="r") as tar:
+        members = tar.getmembers()
+        total = len(members)
+        for i, member in enumerate(members):
+            tar.extract(member, path=dest)
+            if progress_cb and total > 0:
+                pct = int((i + 1) / total * 100)
+                progress_cb(total_files, total_files, f"解压 {pct}%  {member.name}")
+
+
+def _extract_tar_file(tar_path: str, dest: str,
+                       progress_cb, total_files: int) -> None:
+    """按优先级尝试解压：系统 tar > 7-Zip > Python tarfile。"""
+    # 1. Windows 自带 tar (Win10 1803+)
+    if _try_native_extract("tar", ["tar", "-xf", tar_path, "-C", dest], timeout=300):
+        return
+
+    # 2. 7-Zip
+    seven_zip = _find_seven_zip()
+    if seven_zip:
+        if _try_native_extract(seven_zip,
+                               [seven_zip, "x", tar_path, f"-o{dest}", "-y"],
+                               timeout=300):
+            return
+
+    # 3. Python tarfile（最慢但始终可用）
+    _extract_via_python_tarfile(tar_path, dest, progress_cb, total_files)
+
+
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
     """adb exec-out + tar 流式拉取，两线程顺序执行。
@@ -235,7 +291,6 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     两阶段不并行，解压等待接收完成后开始。
     """
     import os
-    import tarfile
     import tempfile
     import threading
 
@@ -317,7 +372,7 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         return False
 
     # ═══════════════════════════════════════════════
-    # Thread 2: 解压 tar → 目标目录
+    # Thread 2: 解压 tar → 目标目录（优先外部工具，回退 Python tarfile）
     # ═══════════════════════════════════════════════
     extract_ok = [False]
     extract_error = [None]
@@ -327,8 +382,7 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         try:
             if progress_cb:
                 progress_cb(total_files * 0.9, total_files, "tar 解压中...")
-            with tarfile.open(tmp_path[0], mode="r") as tar:
-                tar.extractall(path=dest)
+            _extract_tar_file(tmp_path[0], dest, progress_cb, total_files)
             extract_ok[0] = True
         except Exception as e:
             extract_error[0] = e
@@ -503,7 +557,6 @@ def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: in
             elapsed = max(time.time() - start_time, 0.001)
             progress_cb("upload", n, total, f"{int(n / elapsed)} f/s  {file.name}")
 
-    print(f"[COPYTREE] src={src} files={total} dest={dest_str[:80]} cb={progress_cb is not None}")
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_copy_one, f) for f in files]
         for fut in as_completed(futures):
