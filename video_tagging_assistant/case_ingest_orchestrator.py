@@ -228,11 +228,16 @@ def _find_android_tar(adb_exe: str) -> str | None:
 
 def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict, missing: int) -> bool:
-    """尝试 adb exec-out + tar 流式拉取，用 Python tarfile 解压。成功返回 True。"""
-    import io
+    """adb exec-out + tar 流式拉取，两线程顺序执行。
+
+    Thread 1 (接收): adb exec-out → 临时 tar 文件，实时显示速率。
+    Thread 2 (解压): Python tarfile 解压到目标目录。
+    两阶段不并行，解压等待接收完成后开始。
+    """
     import os
     import tarfile
     import tempfile
+    import threading
 
     android_tar = _find_android_tar(adb_exe)
     if android_tar is None:
@@ -240,71 +245,111 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             progress_cb(0, len(remote_files), "Android 无 tar，回退 adb pull")
         return False
 
+    total_est = sum(remote_files.values())
+    total_files = len(remote_files)
+
     if progress_cb:
-        progress_cb(0, len(remote_files), f"tar 流式传输 ({android_tar})")
+        progress_cb(0, total_files, f"tar 流式传输 ({android_tar})")
 
-    try:
-        # exec-out 无交互 shell，PATH 可能不同；tar 已由 _find_android_tar 定位
-        tar_cmd = f"cd {remote_dir} && {android_tar} cf - ."
-        adb_proc = subprocess.Popen(
-            [adb_exe, "exec-out", tar_cmd],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        # 估算总大小（tar 有 metadata 开销，实际多 ~5-10%）
-        total_est = sum(remote_files.values())
-        total_files = len(remote_files)
+    # ── 两阶段共享状态 ──
+    tmp_path = [None]
+    total_read = [0]
+    recv_ok = [False]
+    recv_error = [None]
+    recv_done = threading.Event()
 
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar")
-        total_read = 0
-        start_time = time.time()
+    # ═══════════════════════════════════════════════
+    # Thread 1: 接收 tar 流 → 临时文件
+    # ═══════════════════════════════════════════════
+    def _receive_tar():
         try:
-            with os.fdopen(tmp_fd, "wb") as tmp_file:
+            tmp_fd, tp = tempfile.mkstemp(suffix=".tar")
+            tmp_path[0] = tp
+            start_time = time.time()
+
+            tar_cmd = f"cd {remote_dir} && {android_tar} cf - ."
+            proc = subprocess.Popen(
+                [adb_exe, "exec-out", tar_cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            with os.fdopen(tmp_fd, "wb") as f:
                 while True:
-                    chunk = adb_proc.stdout.read(8 * 1024 * 1024)
+                    chunk = proc.stdout.read(8 * 1024 * 1024)
                     if not chunk:
                         break
-                    tmp_file.write(chunk)
-                    total_read += len(chunk)
+                    f.write(chunk)
+                    total_read[0] += len(chunk)
                     if progress_cb and total_est > 0:
-                        pct = min(int(total_read / total_est * 100), 99)
                         elapsed = max(time.time() - start_time, 0.001)
-                        mb = total_read / (1024 * 1024)
+                        mb = total_read[0] / (1024 * 1024)
                         speed = mb / elapsed
-                        progress_cb(pct, 100,
-                                    f"tar {pct}%  {mb:.0f}MB  {speed:.1f}MB/s")
-                    elif progress_cb:
-                        progress_cb(0, total_files,
-                                    f"tar 接收中 {total_read / 1024:.0f}KB")
-            adb_proc.wait(timeout=timeout)
+                        pct = min(int(total_read[0] / total_est * 100), 99)
+                        progress_cb(pct, 100, f"tar接收 {mb:.0f}MB {speed:.1f}MB/s")
+            proc.wait(timeout=timeout)
 
-            if adb_proc.returncode != 0:
-                stderr = adb_proc.stderr.read().decode("utf-8", errors="replace").strip()
-                if progress_cb:
-                    progress_cb(0, total_files,
-                                f"adb exec-out 失败(code={adb_proc.returncode}): {stderr[:100]}")
-                return False
+            if proc.returncode != 0:
+                stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"adb exec-out 失败(code={proc.returncode}): {stderr[:100]}")
+            if total_read[0] < 1024:
+                raise RuntimeError(f"tar 流仅 {total_read[0]} 字节")
 
-            if total_read < 1024:
-                if progress_cb:
-                    progress_cb(0, total_files,
-                                f"tar 流仅 {total_read} 字节，回退 adb pull")
-                return False
+            recv_ok[0] = True
+        except Exception as e:
+            recv_error[0] = e
+        finally:
+            recv_done.set()
 
+    t_recv = threading.Thread(target=_receive_tar, daemon=True, name=f"tar-recv")
+    t_recv.start()
+    recv_done.wait()
+    t_recv.join()
+
+    if recv_error[0]:
+        try:
+            os.unlink(tmp_path[0])
+        except OSError:
+            pass
+        if progress_cb:
+            progress_cb(0, total_files, f"tar 接收异常: {recv_error[0]}，回退 adb pull")
+        return False
+    if not recv_ok[0]:
+        return False
+
+    # ═══════════════════════════════════════════════
+    # Thread 2: 解压 tar → 目标目录
+    # ═══════════════════════════════════════════════
+    extract_ok = [False]
+    extract_error = [None]
+    extract_done = threading.Event()
+
+    def _extract_tar():
+        try:
             if progress_cb:
                 progress_cb(total_files * 0.9, total_files, "tar 解压中...")
-            with tarfile.open(tmp_path, mode="r") as tar:
+            with tarfile.open(tmp_path[0], mode="r") as tar:
                 tar.extractall(path=dest)
-            return True
+            extract_ok[0] = True
+        except Exception as e:
+            extract_error[0] = e
         finally:
+            extract_done.set()
             try:
-                os.unlink(tmp_path)
+                os.unlink(tmp_path[0])
             except OSError:
                 pass
-    except Exception as exc:
+
+    t_extract = threading.Thread(target=_extract_tar, daemon=True, name=f"tar-extract")
+    t_extract.start()
+    extract_done.wait()
+    t_extract.join()
+
+    if extract_error[0]:
         if progress_cb:
-            progress_cb(0, len(remote_files), f"tar 异常: {exc}，回退 adb pull")
-    return False
+            progress_cb(0, total_files, f"tar 解压异常: {extract_error[0]}，回退 adb pull")
+        return False
+
+    return extract_ok[0]
 
 
 def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
@@ -368,7 +413,9 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
     if progress_cb:
         progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
 
-    _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
+                         progress_cb, remote_files, missing):
+        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
 
     if progress_cb:
         progress_cb(len(remote_files), len(remote_files), "传输完成")
