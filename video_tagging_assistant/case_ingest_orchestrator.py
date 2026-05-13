@@ -407,8 +407,8 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
 
 
 def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
-                  progress_cb) -> None:
-    """回退方案：adb pull 整目录。"""
+                  progress_cb, total_bytes: int = 0) -> None:
+    """adb pull 整目录，实时显示百分比和速率。"""
     remote_path = f"{remote_dir}/."
     proc = subprocess.Popen(
         [adb_exe, "pull", remote_path, dest],
@@ -417,6 +417,7 @@ def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         encoding="utf-8",
         errors="replace",
     )
+    start_time = time.time()
     try:
         for line in proc.stderr:
             line = line.strip()
@@ -426,8 +427,13 @@ def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 pct_str = line.split("%")[0].split("[")[-1].strip()
                 try:
                     pct = int(float(pct_str))
-                    if progress_cb:
-                        progress_cb(pct, 100, f"{pct}% (adb)")
+                    if progress_cb and total_bytes > 0:
+                        elapsed = max(time.time() - start_time, 0.001)
+                        mb_done = total_bytes * pct / 100 / (1024 * 1024)
+                        speed = mb_done / elapsed
+                        progress_cb(pct, 100, f"pull {pct}%  {mb_done:.0f}MB  {speed:.1f}MB/s")
+                    elif progress_cb:
+                        progress_cb(pct, 100, f"pull {pct}%")
                 except (ValueError, IndexError):
                     pass
         proc.wait(timeout=timeout)
@@ -464,17 +470,20 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
             progress_cb(1, 1, "已全部存在")
         return
 
-    pull_mode = config.get("pull_mode", "tar")
+    total_bytes = sum(remote_files.values())
+    pull_mode = config.get("pull_mode", "adb")
 
     if progress_cb:
-        mode_label = "tar 流式" if pull_mode != "adb" else "adb pull"
+        mode_label = "tar 流式" if pull_mode == "tar" else "adb pull"
         progress_cb(0, len(remote_files), f"传输中 - {mode_label} ({missing} 文件)")
 
     if pull_mode == "adb":
-        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb,
+                      total_bytes=total_bytes)
     elif not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
                            progress_cb, remote_files, missing):
-        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb,
+                      total_bytes=total_bytes)
 
     if progress_cb:
         progress_cb(len(remote_files), len(remote_files), "传输完成")
