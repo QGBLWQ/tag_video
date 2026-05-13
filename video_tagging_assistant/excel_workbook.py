@@ -697,13 +697,20 @@ def upsert_create_record_row(
                 break
     if target_row is None:
         target_row = sheet.max_row + 1
-        # 按 case_id 字典序找到正确插入位置，避免乱序审批导致行顺序错乱
+        # 按 case_id 字典序找到正确插入位置
         if case_id_column is not None:
             for row_index in range(2, sheet.max_row + 1):
                 existing = str(sheet.cell(row_index, case_id_column).value or "").strip()
                 if existing and case_id < existing:
                     target_row = row_index
-                    sheet.insert_rows(target_row)
+                    # openpyxl insert_rows 不移动数据，手动逐列下移
+                    old_max_row = sheet.max_row
+                    old_max_col = sheet.max_column
+                    for col_idx in range(1, old_max_col + 1):
+                        for ri in range(old_max_row, target_row - 1, -1):
+                            src = sheet.cell(ri, col_idx).value
+                            sheet.cell(ri + 1, col_idx).value = src
+                        sheet.cell(target_row, col_idx).value = None
                     break
 
     vs_nomal = f"{server_case}\\{case_id}_{manifest.vs_normal_path.name}"
