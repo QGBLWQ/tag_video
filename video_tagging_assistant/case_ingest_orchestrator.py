@@ -410,11 +410,16 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
             progress_cb(1, 1, "已全部存在")
         return
 
-    if progress_cb:
-        progress_cb(0, len(remote_files), f"传输中 ({missing} 文件)")
+    pull_mode = config.get("pull_mode", "tar")
 
-    if not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
-                         progress_cb, remote_files, missing):
+    if progress_cb:
+        mode_label = "tar 流式" if pull_mode != "adb" else "adb pull"
+        progress_cb(0, len(remote_files), f"传输中 - {mode_label} ({missing} 文件)")
+
+    if pull_mode == "adb":
+        _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
+    elif not _pull_via_tar(adb_exe, remote_dir, str(dest), timeout,
+                           progress_cb, remote_files, missing):
         _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb)
 
     if progress_cb:
