@@ -57,7 +57,7 @@ def find_random_test_dir() -> str:
     return chosen
 
 
-def pull_tar_to_file(remote_dir: str, output_path: str, max_files: int = 100) -> tuple:
+def pull_tar_to_file(remote_dir: str, output_path: str, max_files: int = 100):
     """adb exec-out tar → 本地文件（仅前 max_files 个），返回 (file_count, total_size_mb, speed_mbs)。"""
     android_tar = _find_android_tar(ADB)
     if android_tar is None:
@@ -110,7 +110,7 @@ def pull_tar_to_file(remote_dir: str, output_path: str, max_files: int = 100) ->
         print(f"adb exec-out 失败 (code={proc.returncode}): {stderr[:200]}")
         sys.exit(1)
 
-    return file_count, tar_size_mb, speed
+    return file_count, tar_size_mb, speed, recv_time
 
 
 def time_extract(tool_name: str, tar_path: str, dest_dir: str) -> float:
@@ -149,7 +149,7 @@ def main():
     print(f"\n{'='*50}")
     print("Phase 1: adb tar pull")
     print(f"{'='*50}")
-    file_count, tar_size_mb, recv_speed = pull_tar_to_file(remote_dir, tar_path, max_files=PULL_COUNT)
+    file_count, tar_size_mb, recv_speed, recv_time = pull_tar_to_file(remote_dir, tar_path, max_files=PULL_COUNT)
 
     # ── 复制一份 tar 文件供 7-Zip 用 ──
     tar_copy = str(tmp_dir / "test_copy.tar")
@@ -177,25 +177,49 @@ def main():
         file_count2 = sum(1 for _ in Path(dest2).rglob("*") if _.is_file())
         print(f"  7-Zip:      {t2:.1f}s, {speed2:.1f}MB/s, {file_count2} 文件")
 
+    # ── 测试 adb pull（整目录） ──
+    print(f"\n{'='*50}")
+    print("Phase 4: adb pull 整目录")
+    print(f"{'='*50}")
+    dest3 = str(tmp_dir / "adb_pull_test")
+    os.makedirs(dest3, exist_ok=True)
+    start = time.time()
+    proc = subprocess.Popen(
+        [ADB, "pull", f"{remote_dir}/.", dest3],
+        stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+    )
+    for line in proc.stderr:
+        line = line.strip()
+        if line.startswith("[") and "%" in line:
+            print(f"\r  {line}", end="", flush=True)
+    proc.wait(timeout=600)
+    adb_time = time.time() - start
+    total_bytes = sum(
+        f.stat().st_size for f in Path(dest3).rglob("*") if f.is_file()
+    )
+    adb_mb = total_bytes / (1024 * 1024)
+    adb_speed = adb_mb / adb_time if adb_time > 0 else 0
+    adb_files = sum(1 for _ in Path(dest3).rglob("*") if _.is_file())
+    print(f"\n  adb pull: {adb_time:.1f}s, {adb_speed:.1f}MB/s, {adb_mb:.0f}MB, {adb_files} 文件")
+
     # ── 对比 ──
     print(f"\n{'='*50}")
     print("对比结果")
     print(f"{'='*50}")
-    print(f"  接收速率: {recv_speed:.1f}MB/s")
-    if t1 > 0 and t2 > 0:
-        print(f"  Windows tar 解压: {t1:.1f}s ({speed1:.1f}MB/s)")
-        print(f"  7-Zip 解压:      {t2:.1f}s ({speed2:.1f}MB/s)")
-        ratio = t1 / t2 if t2 > 0 else 0
-        if ratio > 1:
-            print(f"  7-Zip 比 tar 快 {ratio:.1f}x")
-        else:
-            print(f"  tar 比 7-Zip 快 {1/ratio:.1f}x")
-    elif t1 > 0:
-        print(f"  Windows tar 解压: {t1:.1f}s ({speed1:.1f}MB/s)")
-        print("  7-Zip 未安装")
-    elif t2 > 0:
-        print(f"  7-Zip 解压: {t2:.1f}s ({speed2:.1f}MB/s)")
-        print("  Windows tar 不可用")
+    print(f"  │  方式          │ 耗时    │ 速率       │ 文件数 │ 数据量 │")
+    print(f"  ├────────────────┼─────────┼────────────┼────────┼────────┤")
+    print(f"  │ tar 接收       │ {recv_time:.0f}s   │ {recv_speed:4.0f} MB/s │ {file_count:6} │ {tar_size_mb:5.0f}MB │")
+    if t1 > 0:
+        print(f"  │ tar 解压 (sys) │ {t1:.0f}s   │ {speed1:4.0f} MB/s │ {file_count1:6} │        │")
+    if t2 > 0:
+        print(f"  │ 7z 解压        │ {t2:.0f}s   │ {speed2:4.0f} MB/s │ {file_count2:6} │        │")
+    print(f"  │ adb pull       │ {adb_time:.0f}s   │ {adb_speed:4.0f} MB/s │ {adb_files:6} │ {adb_mb:5.0f}MB │")
+    print(f"  ├────────────────┼─────────┼────────────┼────────┼────────┤")
+    tar_total = recv_time + (t1 if t1 > 0 else 0)
+    print(f"  │ tar 端到端     │ {tar_total:.0f}s   │ {tar_size_mb/tar_total:4.0f} MB/s │        │        │")
+    print(f"  │ adb 端到端     │ {adb_time:.0f}s   │ {adb_speed:4.0f} MB/s │        │        │")
+    faster = "tar接收" if recv_speed > adb_speed else "adb pull"
+    print(f"  │ {faster} 快 {max(recv_speed, adb_speed) / max(min(recv_speed, adb_speed), 0.1):.1f}x")
 
     # ── 清理 ──
     shutil.rmtree(str(tmp_dir), ignore_errors=True)
