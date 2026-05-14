@@ -504,121 +504,157 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     import socket as _socket
 
     _LOG_PATH = "E:/DV/2.1/test/tag_video/tools/_tcp_debug.log"
+    _log_lock = threading.Lock()
+
     def _dbg(msg):
         try:
-            with open(_LOG_PATH, "a", encoding="utf-8") as lf:
-                lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            with _log_lock:
+                with open(_LOG_PATH, "a", encoding="utf-8") as lf:
+                    lf.write(f"{time.strftime('%H:%M:%S.%f')[:-3]} [{port}] {msg}\n")
         except Exception:
             pass
-    _dbg(f"=== START dest={dest} files={len(remote_files)} ===")
 
-    # 清理设备端所有残留的 nc 进程（避免端口占用）
+    file_list = list(remote_files.items())
+    total_bytes = sum(s for _, s in file_list)
+    total_files = len(file_list)
+    _dbg(f"ENTER remote_dir={remote_dir} dest={dest} files={total_files} "
+         f"total_mb={total_bytes/(1024*1024):.0f}")
+
+    # ── Step 1: 清理残留 nc ──
+    _dbg("STEP1: kill leftover nc processes")
     try:
-        _run([adb_exe, "shell",
-              "for p in /proc/[0-9]*; do "
-              "tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'nc -l' && kill $(basename $p) 2>/dev/null; "
-              "done; rm -f /mnt/nvme/_pull_list_*.txt"],
-             capture_output=True, timeout=5)
+        kill_cmd = ("for p in /proc/[0-9]*; do "
+                    "tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'nc -l' "
+                    "&& kill $(basename $p) 2>/dev/null; "
+                    "done; rm -f /mnt/nvme/_pull_list_*.txt")
+        r = _run([adb_exe, "shell", kill_cmd], capture_output=True, timeout=5)
+        _dbg(f"STEP1: cleanup done rc={r.returncode}")
         time.sleep(0.5)
-    except Exception:
-        pass
+    except Exception as e:
+        _dbg(f"STEP1: cleanup exception {e}")
 
+    # ── Step 2: 检测 nc ──
+    _dbg("STEP2: detect nc")
     android_nc = _find_android_nc(adb_exe)
+    _dbg(f"STEP2: android_nc={android_nc}")
     if not android_nc:
-        _dbg("no nc, bail")
+        _dbg("STEP2: FAIL - no nc found")
         if progress_cb:
             progress_cb(0, len(remote_files), "设备无 nc，降级")
         return False
 
+    # ── Step 3: 分配端口 + adb forward ──
     port = _alloc_forward_port(adb_exe)
-    file_list = list(remote_files.items())  # [(name, size), ...]
-    total_bytes = sum(s for _, s in file_list)
-    total_files = len(file_list)
-
+    _dbg(f"STEP3: allocated port={port}")
     if progress_cb:
         progress_cb(0, 100, f"TCP raw (port {port})")
 
     try:
-        _run([adb_exe, "forward", f"tcp:{port}", f"tcp:{port}"],
-             capture_output=True, timeout=10, check=True)
+        r = _run([adb_exe, "forward", f"tcp:{port}", f"tcp:{port}"],
+                 capture_output=True, timeout=10, check=True)
+        _dbg(f"STEP3: forward created rc={r.returncode}")
     except Exception as e:
+        _dbg(f"STEP3: forward FAILED {e}")
         if progress_cb:
             progress_cb(0, 100, f"adb forward 失败: {e}，降级")
         return False
 
-    # 设备侧：文件列表推送到设备的 NVMe 临时文件
+    # ── Step 4: 推送文件列表到设备 ──
     _list = "\n".join(name for name, _ in file_list) + "\n"
     _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
+    _dbg(f"STEP4: push file list ({len(file_list)} files) to {_list_path}")
     try:
-        _run([adb_exe, "shell", f"cat > {_list_path}"],
-             input=_list, capture_output=True, text=True, timeout=10, check=True)
-        _dbg(f"pushed {len(file_list)} filenames to {_list_path}")
+        r = _run([adb_exe, "shell", f"cat > {_list_path}"],
+                 input=_list, capture_output=True, text=True, timeout=10, check=True)
+        _dbg(f"STEP4: file list pushed rc={r.returncode}")
     except Exception as e:
-        _dbg(f"push file list FAILED: {e}")
+        _dbg(f"STEP4: push FAILED {e}")
         if progress_cb:
             progress_cb(0, 100, f"设备文件列表写入失败: {e}，降级")
         _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
              capture_output=True, timeout=5)
         return False
-    # xargs -n 批量 cat，避免逐文件 fork 停顿
-    # 如果 nc 来自 busybox，用同一个 busybox 的 xargs
+
+    # ── Step 5: 启动设备端 shell ──
     _bb = android_nc.rsplit(" ", 1)[0] if " " in android_nc else "busybox"
     shell_cmd = (
         f"cd '{remote_dir}' && "
         f"{_bb} xargs -n 50 cat < {_list_path} "
         f"| {android_nc} -l -p {port}; rm -f {_list_path}"
     )
-    # 尝试启动 shell，遇到端口占用自动换端口重试
+    _dbg(f"STEP5: shell_cmd={shell_cmd[:200]}")
+
     for _retry in range(3):
+        _dbg(f"STEP5: shell attempt {_retry+1}/3")
         shell_proc = _popen(
             [adb_exe, "shell", shell_cmd],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
         time.sleep(1)
-        if shell_proc.poll() is None:
-            break  # 进程正常运行
+        poll_rc = shell_proc.poll()
+        _dbg(f"STEP5: shell poll={poll_rc} (None=alive)")
+        if poll_rc is None:
+            _dbg(f"STEP5: shell running OK")
+            break
 
         err = shell_proc.stderr.read().decode("utf-8", errors="replace")
+        _dbg(f"STEP5: shell stderr={err[:200]}")
         if "Address in use" in err:
-            _dbg(f"port {port} in use, retry with new port")
+            _dbg(f"STEP5: retry - port {port} in use")
             _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
                  capture_output=True, timeout=5)
             port = _alloc_forward_port(adb_exe)
+            _dbg(f"STEP5: retry - new port={port}")
+            # 重新推送文件列表
+            _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
+            _run([adb_exe, "shell", f"cat > {_list_path}"],
+                 input=_list, capture_output=True, text=True, timeout=10, check=True)
             shell_cmd = (
                 f"cd '{remote_dir}' && "
                 f"{_bb} xargs -n 50 cat < {_list_path} "
                 f"| {android_nc} -l -p {port}; rm -f {_list_path}"
             )
             continue
+        _dbg(f"STEP5: shell failed - not address in use")
         if progress_cb:
             progress_cb(0, 100, f"shell 退出: {err[:100]}，降级")
         _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
              capture_output=True, timeout=5)
         return False
     else:
+        _dbg("STEP5: all 3 retries exhausted")
         if progress_cb:
             progress_cb(0, 100, "端口冲突重试 3 次均失败，降级")
         return False
 
+    # ── Step 6: PC 连接 ──
+    _dbg(f"STEP6: connecting to 127.0.0.1:{port}")
     sock = None
     ok = False
     try:
         deadline = time.time() + 10
+        attempt = 0
         while time.time() < deadline:
+            attempt += 1
             try:
                 sock = _socket.create_connection(("127.0.0.1", port), timeout=2)
+                _dbg(f"STEP6: connected on attempt {attempt}")
                 break
-            except (ConnectionRefusedError, _socket.timeout, OSError):
+            except ConnectionRefusedError:
+                time.sleep(0.1)
+            except _socket.timeout:
+                time.sleep(0.1)
+            except OSError as e:
+                _dbg(f"STEP6: OS error attempt {attempt}: {e}")
                 time.sleep(0.1)
         else:
+            _dbg(f"STEP6: TIMEOUT after {attempt} attempts")
             if progress_cb:
                 progress_cb(0, 100, "连接 nc 超时，降级")
             return False
 
         sock.settimeout(timeout)
-
-        _dbg(f"connected, dest={dest} len={len(str(dest))}")
 
         def _to_ext_path(p):
             s = str(p)
@@ -630,7 +666,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 return "\\\\?\\" + s
 
         ext_dest = _to_ext_path(dest)
-        _dbg(f"ext_dest len={len(ext_dest)}")
+        _dbg(f"STEP7: begin streaming, dest_ext={ext_dest}")
         try:
             _os.makedirs(ext_dest, exist_ok=True)
         except Exception as e:
@@ -712,14 +748,17 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             chunk_q.put(None)
         for t in writers:
             t.join()
+        _dbg(f"DONE: received={total_read/(1024*1024):.0f}MB written={written_bytes[0]/(1024*1024):.0f}MB errs={len(write_errors)}")
 
         if write_errors:
+            _dbg(f"WRITE_ERRORS: {'; '.join(write_errors[:5])}")
             if progress_cb:
                 progress_cb(0, 100, f"写入失败: {'; '.join(write_errors[:3])}，降级")
             return False
 
         ok = True
     except Exception as e:
+        _dbg(f"EXCEPTION: {e}")
         if progress_cb:
             progress_cb(0, 100, f"TCP 异常: {e}，降级")
     finally:
@@ -735,6 +774,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             except Exception:
                 pass
         # 清理设备端临时文件
+        _dbg(f"CLEANUP: ok={ok}, closing socket+shell+forward")
         try:
             _run([adb_exe, "shell", f"rm -f /mnt/nvme/_pull_list_*.txt"],
                  capture_output=True, timeout=3)
