@@ -47,9 +47,20 @@ def compress_video(
     compression_config: Dict,
     progress_cb: Optional[Callable[[int, str], None]] = None,
 ) -> CompressedArtifact:
-    """将单个源视频压缩为适合模型消费的代理视频。"""
+    """将单个源视频压缩为适合模型消费的代理视频。已有缓存则跳过。"""
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{task.source_video_path.stem}_proxy.mp4"
+
+    if target.exists() and target.stat().st_size > 0:
+        if progress_cb:
+            progress_cb(100, task.case_id)
+        return CompressedArtifact(
+            source_video_path=task.source_video_path,
+            compressed_video_path=target,
+            size_bytes=target.stat().st_size,
+            compression_profile=f"{compression_config['width']}px/{compression_config['video_bitrate']}",
+        )
+
     command = build_ffmpeg_command(task.source_video_path, target, compression_config)
 
     proc = subprocess.Popen(

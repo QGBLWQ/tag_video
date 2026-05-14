@@ -102,7 +102,7 @@ class _TaggingWorker(QThread):
                 output_root=output_root,
                 provider=build_provider_from_config(self._config),
                 prompt_template=self._config["prompt_template"],
-                mode="fresh",
+                mode="cached",
                 event_callback=_on_event,
                 concurrency=self._config.get("concurrency", {}),
                 compression_config=self._config.get("compression"),
