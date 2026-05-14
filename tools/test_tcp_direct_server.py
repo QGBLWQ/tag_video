@@ -176,31 +176,43 @@ def main():
             tar_mb = total_read / (1024 * 1024)
             print(f"\n[OK] 接收完成: {tar_mb:.0f}MB, {recv_time:.1f}s, {tar_mb/recv_time:.1f}MB/s")
 
-            # ★ 直传服务器：解压到 server 目录 ★
-            print(f"解压到服务器: {server_dest} ...")
-            extract_start = time.time()
-            os.makedirs(server_dest, exist_ok=True)
-            _extract_tar_file(tmp_path, server_dest, None, len(remote_files))
-            extract_time = time.time() - extract_start
+            # ★ 两阶段：先解压到本地（SSD 快）→ robocopy 并行复制到服务器 ★
+            import tempfile as _tmp
+            local_extract = _tmp.mkdtemp(prefix="tcp_extract_")
+            try:
+                print(f"本地解压: {local_extract} ...")
+                extract_start = time.time()
+                _extract_tar_file(tmp_path, local_extract, None, len(remote_files))
+                extract_time = time.time() - extract_start
+                print(f"[OK] 本地解压: {extract_time:.1f}s")
 
-            # 验证
+                # robocopy /MT 并行复制到服务器
+                print(f"复制到服务器: {server_dest} ...")
+                copy_start = time.time()
+                from video_tagging_assistant.case_ingest_orchestrator import _copytree_with_progress
+                os.makedirs(server_dest, exist_ok=True)
+                _copytree_with_progress(Path(local_extract), Path(server_dest), None, workers=32)
+                copy_time = time.time() - copy_start
+                print(f"[OK] 复制完成: {copy_time:.1f}s")
+            finally:
+                shutil.rmtree(local_extract, ignore_errors=True)
+            # 验证服务器上的文件
             actual_files = sum(1 for _ in Path(server_dest).rglob("*") if _.is_file())
             actual_bytes = sum(
                 f.stat().st_size for f in Path(server_dest).rglob("*") if f.is_file()
             )
             actual_mb = actual_bytes / (1024 * 1024)
-            total_time = recv_time + extract_time
+            total_time = recv_time + extract_time + copy_time
 
-            print(f"[OK] 解压完成: {extract_time:.1f}s")
             print(f"\n{'='*50}")
             print("结果")
             print(f"{'='*50}")
             print(f"  文件数:     {actual_files}")
             print(f"  数据量:     {tar_mb:.0f}MB (tar) / {actual_mb:.0f}MB (解压)")
-            if recv_time > 0:
-                print(f"  接收耗时:   {recv_time:.1f}s  ({tar_mb/recv_time:.1f}MB/s)")
-            if extract_time > 0:
-                print(f"  解压耗时:   {extract_time:.1f}s  ({actual_mb/extract_time:.1f}MB/s)")
+            print(f"  接收耗时:   {recv_time:.1f}s  ({tar_mb/recv_time:.1f}MB/s)")
+            print(f"  本地解压:   {extract_time:.1f}s")
+            print(f"  复制服务器: {copy_time:.1f}s  ({actual_mb/copy_time:.1f}MB/s)")
+            print(f"  总耗时:     {total_time:.1f}s  ({actual_mb/total_time:.1f}MB/s)")
             print(f"  服务器路径: {server_dest}")
 
             ok = True
