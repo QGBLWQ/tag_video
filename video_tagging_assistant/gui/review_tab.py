@@ -309,6 +309,10 @@ class ReviewTab(QWidget):
             return
 
         manifest = self._manifests[self._current_index]
+        print(f"[HANDLE_PASS] index={self._current_index} cid={manifest.case_id} "
+              f"dji={manifest.vs_normal_path.name} "
+              f"local_root={manifest.local_case_root} "
+              f"desc={self._scene_desc_edit.toPlainText()[:30]}")
         if manifest.case_id in self._approved_ids:
             reply = QMessageBox.question(
                 self, "确认覆盖",

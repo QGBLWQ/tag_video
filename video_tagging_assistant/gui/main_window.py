@@ -132,6 +132,8 @@ class MainWindow(QMainWindow):
 
     def _write_review_outputs(self, manifest, tag_result) -> Path:
         """将审核通过后的 xlsx/txt 产物写入本地 case 目录。"""
+        print(f"[WRITE_OUTPUTS] cid={manifest.case_id} local_root={manifest.local_case_root} "
+              f"desc={tag_result.scene_description[:30]}")
         if self._workbook_path.exists():
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
