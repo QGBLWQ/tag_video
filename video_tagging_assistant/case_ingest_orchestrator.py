@@ -657,10 +657,29 @@ def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         raise RuntimeError(f"adb pull 失败: {stderr_text}")
 
 
-def pull_case(manifest, config: dict, progress_cb=None) -> None:
-    """增量 pull：对比远端/本地文件，有缺失时用 adb exec-out + tar 流式拉取。"""
+def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> None:
+    """增量 pull。若 server_dest 可达，RK 直接解压到服务器，跳过本地。
+
+    Args:
+        server_dest: 服务器上 case_RK_raw 目录的完整路径，若为 None 或不可达则走本地。
+    """
     rk_suffix = manifest.raw_path.name
-    dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+
+    # 确定目标目录：优先直传服务器
+    use_server = False
+    if server_dest and config.get("direct_server_pull", True):
+        server_path = str(server_dest)
+        if _server_reachable(server_path):
+            use_server = True
+            dest = Path(server_path)
+            if progress_cb:
+                progress_cb(0, 1, f"直传服务器: {server_path}")
+        elif progress_cb:
+            progress_cb(0, 1, "服务器不可达，降级到本地")
+
+    if not use_server:
+        dest = Path(config["local_case_root"]) / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+
     dest.mkdir(parents=True, exist_ok=True)
     remote_dir = f"{config['dut_root']}/{rk_suffix}"
     adb_exe = config["adb_exe"]
@@ -717,6 +736,8 @@ def pull_case(manifest, config: dict, progress_cb=None) -> None:
         # 最终回退：adb pull（该 case 独立走，不影响其他 case）
         _pull_via_adb(adb_exe, remote_dir, str(dest), timeout, progress_cb,
                       total_bytes=total_bytes)
+
+    manifest.rk_on_server = use_server
 
     if progress_cb:
         progress_cb(len(remote_files), len(remote_files), "传输完成")
