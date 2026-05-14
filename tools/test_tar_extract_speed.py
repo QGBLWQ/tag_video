@@ -48,7 +48,11 @@ def find_random_test_dir() -> str:
         [ADB, "shell", f"ls {DUT_ROOT}"],
         capture_output=True, text=True, timeout=10,
     )
-    dirs = [d.strip() for d in result.stdout.splitlines() if d.strip().isdigit()]
+    dirs = []
+    for d in result.stdout.splitlines():
+        name = d.strip().rstrip("/").split("/")[-1]
+        if name.isdigit():
+            dirs.append(name)
     if not dirs:
         print(f"无法在 {DUT_ROOT} 找到纯数字目录")
         sys.exit(1)
@@ -184,7 +188,7 @@ def main():
     dest3 = str(tmp_dir / "adb_pull_test")
     os.makedirs(dest3, exist_ok=True)
 
-    temp_remote = "/data/local/tmp/_pull_test_100"
+    temp_remote = f"{DUT_ROOT}/_pull_test_100"
     android_tar = _find_android_tar(ADB)
     remote_files = _adb_list_files(ADB, remote_dir)
     first_100_names = list(remote_files.keys())[:100]

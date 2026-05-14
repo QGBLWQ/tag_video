@@ -24,7 +24,11 @@ def find_test_dir() -> str:
         [ADB, "shell", f"ls {DUT_ROOT}"],
         capture_output=True, text=True, timeout=10,
     )
-    dirs = [d.strip() for d in result.stdout.splitlines() if d.strip().isdigit()]
+    dirs = []
+    for d in result.stdout.splitlines():
+        name = d.strip().rstrip("/").split("/")[-1]
+        if name.isdigit():
+            dirs.append(name)
     if not dirs:
         print(f"无法在 {DUT_ROOT} 找到纯数字目录")
         sys.exit(1)
