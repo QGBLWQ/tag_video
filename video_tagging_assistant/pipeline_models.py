@@ -55,6 +55,7 @@ class CaseManifest:
     remark: str
     labels: Dict[str, str] = field(default_factory=dict)
     rk_on_server: bool = False
+    device_label: str = ""  # "M1_3" 或空（单设备兼容）
 
     @property
     def cache_dir_name(self) -> str:
