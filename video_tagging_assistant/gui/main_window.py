@@ -134,6 +134,30 @@ class MainWindow(QMainWindow):
         """将审核通过后的 xlsx/txt 产物写入本地 case 目录。"""
         print(f"[WRITE_OUTPUTS] cid={manifest.case_id} local_root={manifest.local_case_root} "
               f"desc={tag_result.scene_description[:30]}")
+
+        # 校验：本地目录名应包含 case_id
+        local_dir = str(manifest.local_case_root)
+        if manifest.case_id not in local_dir:
+            msg = (f"数据异常！manifest.case_id={manifest.case_id} 但 "
+                   f"local_case_root={local_dir} 不包含该 case_id，拒绝写入！")
+            print(f"[WRITE_OUTPUTS] ERROR: {msg}")
+            raise RuntimeError(msg)
+
+        # 校验：对比 AI 缓存中的画面描述，不一致则警告
+        try:
+            from pathlib import Path as _P
+            from video_tagging_assistant.tagging_cache import load_cached_result
+            cache_root = _P(self._config.get("cache_root", "artifacts/cache"))
+            cached = load_cached_result(cache_root, manifest)
+            if cached:
+                expected = cached.get("scene_description", "")
+                if expected and expected != tag_result.scene_description:
+                    print(f"[WRITE_OUTPUTS] WARNING: cid={manifest.case_id} "
+                          f"desc mismatch! cache='{expected[:30]}' vs "
+                          f"input='{tag_result.scene_description[:30]}'")
+        except Exception:
+            pass  # 缓存不可用时不拦截
+
         if self._workbook_path.exists():
             try:
                 upsert_create_record_row(self._workbook_path, manifest, tag_result)
