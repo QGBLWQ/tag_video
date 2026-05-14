@@ -512,6 +512,17 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             pass
     _dbg(f"=== START dest={dest} files={len(remote_files)} ===")
 
+    # 清理设备端所有残留的 nc 进程（避免端口占用）
+    try:
+        _run([adb_exe, "shell",
+              "for p in /proc/[0-9]*/cmdline; do "
+              "grep -q 'nc ' \"$p\" 2>/dev/null && kill $(basename $(dirname $p)) 2>/dev/null; "
+              "done; rm -f /mnt/nvme/_pull_list_*.txt"],
+             capture_output=True, timeout=5)
+        time.sleep(0.5)
+    except Exception:
+        pass
+
     android_nc = _find_android_nc(adb_exe)
     if not android_nc:
         _dbg("no nc, bail")
@@ -723,6 +734,12 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 shell_proc.wait(timeout=3)
             except Exception:
                 pass
+        # 清理设备端临时文件
+        try:
+            _run([adb_exe, "shell", f"rm -f /mnt/nvme/_pull_list_*.txt"],
+                 capture_output=True, timeout=3)
+        except Exception:
+            pass
         try:
             _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
                  capture_output=True, timeout=5)
