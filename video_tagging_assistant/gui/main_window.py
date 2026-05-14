@@ -285,8 +285,18 @@ class MainWindow(QMainWindow):
         # 但"获取列表"处理状态未 R（manifests 已排除 R 行，所以这里全都是未 R 的）
         written_names = find_written_dji_names(self._workbook_path)
         # VS_Nomal 存的是 "{case_id}_{dji_name}"，所以匹配也要加 case_id 前缀
-        already_written = [m for m in manifests
-                           if f"{m.case_id}_{m.vs_normal_path.name}" in written_names]
+        already_written = []
+        print(f"[DETECT_WRITTEN] checking {len(manifests)} manifests "
+              f"against {len(written_names)} written names")
+        for m in manifests:
+            lookup = f"{m.case_id}_{m.vs_normal_path.name}"
+            hit = lookup in written_names
+            print(f"[DETECT_WRITTEN]   manifest={m.case_id} dji={m.vs_normal_path.name} "
+                  f"lookup={lookup} hit={hit}")
+            if hit:
+                already_written.append(m)
+        if not already_written:
+            print(f"[DETECT_WRITTEN] no matches found")
         if already_written:
             lines = "\n".join(f"  • {m.case_id}  ({m.vs_normal_path.name})"
                               for m in already_written)

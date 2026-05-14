@@ -831,6 +831,8 @@ def find_written_dji_names(workbook_path: Path) -> Set[str]:
         fname = cell_value.replace("/", "\\").split("\\")[-1]
         if fname:
             names.add(fname)
+    print(f"[FIND_WRITTEN] sheet=创建记录 col=VS_Nomal rows={sheet.max_row} "
+          f"found={len(names)} names={list(names)[:10]}")
     return names
 
 
