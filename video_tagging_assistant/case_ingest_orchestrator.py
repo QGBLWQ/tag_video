@@ -576,14 +576,16 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 if item is None:
                     break
                 name, data = item
+                fpath = _os.path.join(dest, name)
                 try:
-                    fpath = _os.path.join(dest, name)
+                    print(f"[TCP_WRITE] len(fpath)={len(fpath)} path={fpath[:120]}...")
                     _os.makedirs(_os.path.dirname(fpath), exist_ok=True)
                     with open(fpath, "wb") as f:
                         f.write(data)
                     with write_lock:
                         written_bytes[0] += len(data)
                 except Exception as e:
+                    print(f"[TCP_WRITE_ERR] fpath={fpath} err={e}")
                     write_errors.append(str(e))
                 finally:
                     chunk_q.task_done()
@@ -598,6 +600,9 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
 
         total_read = 0
         start = time.time()
+        print(f"[TCP_PULL] dest={dest} len={len(str(dest))}")
+        first_name = file_list[0][0] if file_list else "N/A"
+        print(f"[TCP_PULL] first_file={first_name} total_path_len={len(str(dest)) + len(first_name) + 1}")
         for name, size in file_list:
             data = _recv_exactly(sock, size)
             total_read += len(data)
