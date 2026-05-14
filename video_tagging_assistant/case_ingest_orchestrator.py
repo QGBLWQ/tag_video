@@ -284,6 +284,49 @@ def _extract_via_python_tarfile(tar_path: str, dest: str,
                 progress_cb(total_files, total_files, f"解压 {pct}%  {member.name}")
 
 
+def _extract_tar_parallel_unc(tar_path: str, dest: str,
+                                progress_cb, total_files: int,
+                                workers: int = 32) -> None:
+    """tar 解压到 UNC 路径，多线程并行写 SMB 避免单文件协议开销。"""
+    import os as _os
+    import tarfile as _tarfile
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    from concurrent.futures import as_completed as _ac
+
+    _os.makedirs(dest, exist_ok=True)
+    errors = []
+    written = [0]
+    lock = threading.Lock()
+
+    def _write_one(member, data):
+        fname = member.name.lstrip("./")
+        fpath = _os.path.join(dest, fname.replace("/", _os.sep))
+        _os.makedirs(_os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as f:
+            f.write(data)
+        with lock:
+            written[0] += 1
+            if progress_cb and total_files > 0:
+                progress_cb(total_files, total_files,
+                            f"解压 {written[0]}/{total_files}  {member.name}")
+
+    with _tarfile.open(tar_path, mode="r") as tar:
+        members = [m for m in tar.getmembers() if m.isfile()]
+        with _TPE(max_workers=workers) as pool:
+            futures = []
+            for member in members:
+                data = tar.extractfile(member).read()
+                futures.append(pool.submit(_write_one, member, data))
+            for fut in _ac(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    errors.append(str(e))
+
+    if errors:
+        raise RuntimeError(f"并行解压到服务器失败: {'; '.join(errors[:3])}")
+
+
 def _extract_tar_file(tar_path: str, dest: str,
                        progress_cb, total_files: int) -> None:
     """按优先级尝试解压：系统 tar > 7-Zip > Python tarfile。"""
@@ -593,10 +636,13 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                     pass
                 return False
 
-            # 解压
+            # 解压（UNC 路径用多线程并行写，本地路径走原生工具）
             if progress_cb:
                 progress_cb(total_files * 0.9, total_files, "TCP 接收完成，解压中...")
-            _extract_tar_file(tmp_path, dest, progress_cb, total_files)
+            if str(dest).startswith("\\\\") or str(dest).startswith("//"):
+                _extract_tar_parallel_unc(tmp_path, dest, progress_cb, total_files)
+            else:
+                _extract_tar_file(tmp_path, dest, progress_cb, total_files)
             ok = True
         finally:
             try:
