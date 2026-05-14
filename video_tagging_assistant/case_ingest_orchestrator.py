@@ -543,9 +543,12 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
              input=_list, capture_output=True, text=True, timeout=10, check=True)
     except Exception:
         pass  # 失败则降级到下面的 fallback
+    # xargs -n 批量 cat，避免逐文件 fork 停顿
+    # 如果 nc 来自 busybox，用同一个 busybox 的 xargs
+    _bb = android_nc.rsplit(" ", 1)[0] if " " in android_nc else "busybox"
     shell_cmd = (
         f"cd '{remote_dir}' && "
-        f"while read -r f; do cat \"$f\"; done < {_list_path} "
+        f"{_bb} xargs -n 50 cat < {_list_path} "
         f"| {android_nc} -l -p {port}; rm -f {_list_path}"
     )
     shell_proc = _popen(
@@ -598,12 +601,16 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             _dbg(f"makedirs FAIL: {e}")
             raise
 
-        # 写入队列 + 多线程并行写
+        # 流式 chunk 队列：收 chunk → 线程池直接写服务器，不等整个文件
         import queue as _queue
-        chunk_q = _queue.Queue(maxsize=64)
+        _CHUNK = 8 * 1024 * 1024  # 8MB 块
+        chunk_q = _queue.Queue(maxsize=128)
         write_errors = []
         written_bytes = [0]
         write_lock = threading.Lock()
+        # 预打开的文件句柄缓存
+        _fds = {}
+        _fd_lock = threading.Lock()
 
         def _writer():
             while True:
@@ -612,16 +619,17 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                     break
                 name, data = item
                 fpath = _os.path.join(dest, name)
-                ext_fpath = _to_ext_path(fpath)
                 try:
-                    ext_dpath = _to_ext_path(_os.path.dirname(fpath))
-                    _os.makedirs(ext_dpath, exist_ok=True)
-                    with open(ext_fpath, "wb") as f:
-                        f.write(data)
+                    with _fd_lock:
+                        if name not in _fds:
+                            ext_dpath = _to_ext_path(_os.path.dirname(fpath))
+                            _os.makedirs(ext_dpath, exist_ok=True)
+                            _fds[name] = open(_to_ext_path(fpath), "wb")
+                    _fds[name].write(data)
                     with write_lock:
                         written_bytes[0] += len(data)
                 except Exception as e:
-                    _dbg(f"WRITE_ERR name={name} len(fpath)={len(fpath)} err={e}")
+                    _dbg(f"WRITE_ERR name={name} err={e}")
                     write_errors.append(str(e))
                 finally:
                     chunk_q.task_done()
@@ -637,20 +645,31 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         total_read = 0
         start = time.time()
         for name, size in file_list:
+            remaining = size
+            while remaining > 0:
+                n = min(remaining, _CHUNK)
+                try:
+                    data = _recv_exactly(sock, n)
+                except Exception as e:
+                    _dbg(f"RECV_ERR name={name} size={size} remaining={remaining} err={e}")
+                    raise
+                total_read += len(data)
+                chunk_q.put((name, data))
+                remaining -= len(data)
+                if progress_cb:
+                    elapsed = max(time.time() - start, 0.001)
+                    mb_read = total_read / (1024 * 1024)
+                    speed = mb_read / elapsed
+                    pct = int(total_read / total_bytes * 100) if total_bytes > 0 else 0
+                    progress_cb(pct, 100,
+                                f"TCP {pct}% {mb_read:.0f}MB {speed:.1f}MB/s")
+
+        # 关闭所有文件句柄
+        for name, fh in _fds.items():
             try:
-                data = _recv_exactly(sock, size)
-            except Exception as e:
-                _dbg(f"RECV_ERR name={name} size={size} err={e}")
-                raise
-            total_read += len(data)
-            chunk_q.put((name, data))
-            if progress_cb:
-                elapsed = max(time.time() - start, 0.001)
-                mb_read = total_read / (1024 * 1024)
-                speed = mb_read / elapsed
-                pct = int(total_read / total_bytes * 100) if total_bytes > 0 else 0
-                progress_cb(pct, 100,
-                            f"TCP {pct}% {mb_read:.0f}MB {speed:.1f}MB/s")
+                fh.close()
+            except Exception:
+                pass
 
         chunk_q.join()
         for _ in writers:
