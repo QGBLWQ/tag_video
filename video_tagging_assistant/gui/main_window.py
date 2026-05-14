@@ -155,9 +155,11 @@ class MainWindow(QMainWindow):
         if not isinstance(txt_path, Path) or not txt_path.exists():
             return
 
+        dest = server_case_dir / txt_path.name
+        print(f"[SYNC_TXT] src={txt_path} -> dest={dest}")
         try:
             server_case_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(txt_path), str(server_case_dir / txt_path.name))
+            shutil.copy2(str(txt_path), str(dest))
         except Exception as exc:
             raise RuntimeError(f"txt 上传失败: {exc}") from exc
 

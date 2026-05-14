@@ -919,6 +919,8 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
     workers = int(config.get("upload_workers", 8))
     src = local_root / mode / manifest.created_date / manifest.case_id
     dest = server_root / mode / manifest.created_date / manifest.case_id
+    print(f"[UPLOAD_CASE] cid={manifest.case_id} rk_on_server={manifest.rk_on_server} "
+          f"src={src} dest={dest} raw={manifest.raw_path.name}")
 
     if manifest.rk_on_server:
         # RK 已在服务器 — 只补传 DJI normal/night/txt
@@ -926,7 +928,9 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
         import shutil as _shutil
         for item in src.iterdir():
             if item.is_dir() and "RK_raw" in item.name:
+                print(f"[UPLOAD_CASE] skip RK dir: {item.name}")
                 continue
+            print(f"[UPLOAD_CASE] upload item: {item.name}")
             if item.is_dir():
                 _shutil.copytree(str(item), str(dest / item.name), dirs_exist_ok=True)
             else:
@@ -936,6 +940,8 @@ def upload_case(manifest, config: dict, progress_cb=None) -> None:
     # 原有逻辑：整目录上传
     rk_subdir = dest / f"{manifest.case_id}_RK_raw_{manifest.raw_path.name}"
     if rk_subdir.exists() and any(rk_subdir.iterdir()):
+        print(f"[UPLOAD_CASE] already exists, skip")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[UPLOAD_CASE] full copytree {len(list(src.iterdir()))} items in src")
     _copytree_with_progress(src, dest, progress_cb, workers=workers)

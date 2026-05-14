@@ -797,6 +797,8 @@ def write_case_txt(manifest: "CaseManifest", tag_result: TagResult) -> Path:
     output_dir = manifest.local_case_root
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / filename
+    print(f"[WRITE_TXT] case={case_id} out={out_path} raw={manifest.raw_path.name} "
+          f"desc={tag_result.scene_description[:30]} server_dir={manifest.server_case_dir}")
     with open(out_path, "w", encoding="gbk", errors="replace") as f:
         f.write("\n".join(lines))
     return out_path
