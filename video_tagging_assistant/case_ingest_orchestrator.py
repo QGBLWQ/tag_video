@@ -535,14 +535,20 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             progress_cb(0, 100, f"adb forward 失败: {e}，降级")
         return False
 
-    # 设备侧：文件列表推送到设备，循环读避免命令行过长
+    # 设备侧：文件列表推送到设备的 NVMe 临时文件
     _list = "\n".join(name for name, _ in file_list) + "\n"
     _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
     try:
         _run([adb_exe, "shell", f"cat > {_list_path}"],
              input=_list, capture_output=True, text=True, timeout=10, check=True)
-    except Exception:
-        pass  # 失败则降级到下面的 fallback
+        _dbg(f"pushed {len(file_list)} filenames to {_list_path}")
+    except Exception as e:
+        _dbg(f"push file list FAILED: {e}")
+        if progress_cb:
+            progress_cb(0, 100, f"设备文件列表写入失败: {e}，降级")
+        _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
+             capture_output=True, timeout=5)
+        return False
     # xargs -n 批量 cat，避免逐文件 fork 停顿
     # 如果 nc 来自 busybox，用同一个 busybox 的 xargs
     _bb = android_nc.rsplit(" ", 1)[0] if " " in android_nc else "busybox"
