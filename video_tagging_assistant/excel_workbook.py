@@ -828,7 +828,7 @@ def find_written_dji_names(workbook_path: Path) -> Set[str]:
         if not cell_value:
             continue
         # 取路径最后一段为文件名（兼容 Windows 反斜杠与正斜杠）
-        fname = cell_value.replace("/", "\\").split("\\")[-1]
+        fname = cell_value.replace("/", "\\").split("\\")[-1].strip()
         if fname:
             names.add(fname)
     print(f"[FIND_WRITTEN] sheet=创建记录 col=VS_Nomal rows={sheet.max_row} "
