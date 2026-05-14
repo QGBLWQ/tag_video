@@ -664,8 +664,8 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                     progress_cb(pct, 100,
                                 f"TCP {pct}% {mb_read:.0f}MB {speed:.1f}MB/s")
 
-        # 关闭所有文件句柄
-        for name, fh in _fds.items():
+        # 关闭所有文件句柄（list 快照避免 writer 并发修改 dict）
+        for name, fh in list(_fds.items()):
             try:
                 fh.close()
             except Exception:
