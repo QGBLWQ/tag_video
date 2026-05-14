@@ -50,6 +50,20 @@ class ExecutionTab(QWidget):
         self._upload_placeholder = QLabel("  （暂无上传任务）")
         self._upload_container.addWidget(self._upload_placeholder)
 
+        # 端口状态 + 清理按钮
+        port_row = QHBoxLayout()
+        port_row.addWidget(QLabel("ADB 端口状态："))
+        self._port_status_label = QLabel("点击刷新")
+        port_row.addWidget(self._port_status_label, stretch=1)
+        self._refresh_ports_btn = QPushButton("刷新")
+        self._clear_ports_btn = QPushButton("清理残留")
+        self._clear_ports_btn.setToolTip("清理设备上残留的 nc 进程和 adb forward")
+        port_row.addWidget(self._refresh_ports_btn)
+        port_row.addWidget(self._clear_ports_btn)
+        layout.addLayout(port_row)
+        self._refresh_ports_btn.clicked.connect(self._refresh_port_status)
+        self._clear_ports_btn.clicked.connect(self._clear_stale_ports)
+
         layout.addWidget(QLabel("执行日志："))
         self._log_panel = QTextEdit()
         self._log_panel.setReadOnly(True)
@@ -193,6 +207,61 @@ class ExecutionTab(QWidget):
         self._retry_buttons[case_id] = btn
         btn.clicked.connect(lambda: self._retry(case_id))
         self.layout().addWidget(btn)
+
+    def _refresh_port_status(self) -> None:
+        """从 adb forward --list 和设备 ps 获取端口占用状态。"""
+        import subprocess, sys
+        parts = []
+        try:
+            kw = {}
+            if sys.platform == "win32":
+                kw["creationflags"] = 0x08000000
+            # adb forwards
+            r = subprocess.run(["adb", "forward", "--list"],
+                               capture_output=True, text=True, timeout=5, **kw)
+            lines = [l for l in r.stdout.splitlines() if "tcp:" in l]
+            parts.append(f"PC forward: {len(lines)} 个" if lines else "PC forward: 无")
+            # 设备 nc 进程
+            r = subprocess.run(
+                ["adb", "shell",
+                 "for p in /proc/[0-9]*/cmdline; do "
+                 "grep -q 'nc ' \"$p\" 2>/dev/null && echo $(basename $(dirname $p)); done"],
+                capture_output=True, text=True, timeout=5, **kw)
+            pids = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+            if pids:
+                parts.append(f"设备 nc 进程: PID {', '.join(pids)}")
+            else:
+                parts.append("设备 nc 进程: 无")
+        except Exception as e:
+            parts.append(f"检测失败: {e}")
+        self._port_status_label.setText(" | ".join(parts))
+
+    def _clear_stale_ports(self) -> None:
+        """清理设备上残留的 nc 进程和所有 adb forward。"""
+        import subprocess, sys
+        kw = {}
+        if sys.platform == "win32":
+            kw["creationflags"] = 0x08000000
+        try:
+            subprocess.run(
+                ["adb", "shell",
+                 "for p in /proc/[0-9]*/cmdline; do "
+                 "grep -q 'nc ' \"$p\" 2>/dev/null && kill $(basename $(dirname $p)) 2>/dev/null; done; "
+                 "rm -f /mnt/nvme/_pull_list_*.txt"],
+                capture_output=True, timeout=5, **kw)
+            # 移除所有 forward
+            r = subprocess.run(["adb", "forward", "--list"],
+                               capture_output=True, text=True, timeout=5, **kw)
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                for p in parts:
+                    if p.startswith("tcp:"):
+                        subprocess.run(["adb", "forward", "--remove", p],
+                                       capture_output=True, timeout=3, **kw)
+            self._append_log("SYSTEM", "ports", "cleaned", "残留端口已清理")
+        except Exception as e:
+            self._append_log("SYSTEM", "ports", "error", str(e))
+        self._refresh_port_status()
 
     def _retry(self, case_id: str) -> None:
         """把失败 case 重新送回执行队列。"""
