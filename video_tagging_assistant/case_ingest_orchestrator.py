@@ -503,8 +503,18 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     import os as _os
     import socket as _socket
 
+    _LOG_PATH = "C:/Users/19872/Desktop/work！/tools/_tcp_debug.log"
+    def _dbg(msg):
+        try:
+            with open(_LOG_PATH, "a", encoding="utf-8") as lf:
+                lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+        except Exception:
+            pass
+    _dbg(f"=== START dest={dest} files={len(remote_files)} ===")
+
     android_nc = _find_android_nc(adb_exe)
     if not android_nc:
+        _dbg("no nc, bail")
         if progress_cb:
             progress_cb(0, len(remote_files), "设备无 nc，降级")
         return False
@@ -562,17 +572,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
 
         sock.settimeout(timeout)
 
-        # 调试日志 → 文件（GUI 后台线程看不到 stdout）
-        def _dbg(msg):
-            try:
-                with open(_os.path.join(_os.path.dirname(__file__),
-                         "_tcp_debug.log"), "a", encoding="utf-8") as lf:
-                    lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
-            except Exception:
-                pass
-
-        _dbg(f"dest={dest} len={len(str(dest))}")
-        _dbg(f"file_list={len(file_list)} files total_bytes={total_bytes}")
+        _dbg(f"connected, dest={dest} len={len(str(dest))}")
 
         def _to_ext_path(p):
             s = str(p)
