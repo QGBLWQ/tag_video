@@ -760,6 +760,22 @@ def move_case(manifest, config: dict) -> None:
                 pass
 
 
+def _server_reachable(server_path: str) -> bool:
+    """检测服务器路径是否可写。返回 True 表示可达。"""
+    import os as _os
+    parent = str(Path(server_path).parent)
+    try:
+        _os.makedirs(parent, exist_ok=True)
+        # 尝试创建一个测试文件验证可达性
+        test_file = _os.path.join(parent, ".pull_write_test")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        _os.remove(test_file)
+        return True
+    except Exception:
+        return False
+
+
 def _copytree_with_progress(src: Path, dest: Path, progress_cb=None, workers: int = 8) -> None:
     """复制目录树到服务器。
 
