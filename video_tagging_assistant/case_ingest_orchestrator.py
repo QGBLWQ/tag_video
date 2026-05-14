@@ -261,7 +261,7 @@ def _find_seven_zip() -> str | None:
     return None
 
 
-def _try_native_extract(tool: str, args: list, dest: str, timeout: int = 300) -> bool:
+def _try_native_extract(tool: str, args: list, timeout: int = 300) -> bool:
     """调用外部解压工具，成功返回 True。"""
     try:
         _run(args, check=True, capture_output=True, timeout=timeout)
@@ -463,9 +463,10 @@ def _alloc_forward_port(adb_exe: str) -> int:
 
 
 def _find_android_nc(adb_exe: str) -> str | None:
-    """检测设备上的 nc / busybox nc。"""
+    """检测设备上的 nc / busybox nc（验证 applet 真实存在）。"""
     for candidate in ["nc", "busybox nc", "toybox nc",
-                      "/data/local/tmp/busybox nc"]:
+                      "/data/local/tmp/busybox nc",
+                      "/mnt/nvme/CapturedData/busybox nc"]:
         try:
             first = candidate.split()[0]
             r = _run([adb_exe, "shell", f"which {first} 2>/dev/null"],
@@ -474,6 +475,16 @@ def _find_android_nc(adb_exe: str) -> str | None:
                 full = r.stdout.strip()
                 if " " in candidate:
                     full += " " + candidate.split(" ", 1)[1]
+                # 验证 nc applet 真实可用（busybox 可能不带 nc）
+                if "busybox" in full:
+                    # full 是 "busybox nc"，先取出 busybox 本体路径再做 --list
+                    bb_path = full.rsplit(" ", 1)[0]
+                    check = _run(
+                        [adb_exe, "shell", f"{bb_path} --list 2>/dev/null | grep -w nc"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if check.returncode != 0 or not check.stdout.strip():
+                        continue  # 这个 busybox 没有 nc，试下一个
                 return full
         except Exception:
             pass
