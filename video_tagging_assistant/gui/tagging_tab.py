@@ -214,9 +214,15 @@ class TaggingTab(QWidget):
         auto_row.addWidget(self._device_combo, stretch=1)
         layout.addLayout(auto_row)
 
-        # 开始按钮 + 进度
+        # 开始按钮 + 清除缓存 + 进度
+        btn_row = QHBoxLayout()
         self._start_btn = QPushButton("开始")
-        layout.addWidget(self._start_btn)
+        self._clear_cache_btn = QPushButton("清除缓存")
+        self._clear_cache_btn.setToolTip("删除压缩代理视频和 AI 缓存，下次标定将重新处理")
+        btn_row.addWidget(self._start_btn)
+        btn_row.addWidget(self._clear_cache_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
         self._progress_bar = QProgressBar()
         self._progress_bar.setValue(0)
         self._current_file_label = QLabel("")
@@ -249,6 +255,7 @@ class TaggingTab(QWidget):
         self._auto_mode_check.toggled.connect(self._sync_auto_mode_widgets)
         self._select_all_btn.clicked.connect(self._select_all_cases)
         self._deselect_all_btn.clicked.connect(self._deselect_all_cases)
+        self._clear_cache_btn.clicked.connect(self._clear_caches)
 
     def _browse_workbook(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -372,6 +379,32 @@ class TaggingTab(QWidget):
     def _deselect_all_cases(self) -> None:
         for i in range(self._case_list.count()):
             self._case_list.item(i).setCheckState(Qt.Unchecked)
+
+    def _clear_caches(self) -> None:
+        """清除压缩代理视频和 AI 打标缓存。"""
+        import shutil
+        dirs_cleared = []
+        # 压缩代理视频
+        output_root = Path(self._config.get("tagging_output_root", "artifacts/gui_pipeline"))
+        compressed = output_root / "compressed"
+        if compressed.exists():
+            shutil.rmtree(str(compressed), ignore_errors=True)
+            dirs_cleared.append(str(compressed))
+        # AI 缓存
+        cache_root = Path(self._config.get("cache_root", "artifacts/cache"))
+        if cache_root.exists():
+            shutil.rmtree(str(cache_root), ignore_errors=True)
+            dirs_cleared.append(str(cache_root))
+        # 中间 JSON
+        intermediate = Path(self._config.get("intermediate_dir", "output/intermediate"))
+        if intermediate.exists():
+            shutil.rmtree(str(intermediate), ignore_errors=True)
+            dirs_cleared.append(str(intermediate))
+
+        if dirs_cleared:
+            self._log_panel.append(f"已清除缓存: {', '.join(dirs_cleared)}")
+        else:
+            self._log_panel.append("没有需要清除的缓存")
 
     def _get_checked_manifests(self) -> list:
         checked = []
