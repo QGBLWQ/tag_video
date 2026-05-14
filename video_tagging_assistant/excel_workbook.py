@@ -869,6 +869,81 @@ def find_written_dji_names(workbook_path: Path) -> Set[str]:
     return names
 
 
+def allocate_multi_device_cases(
+    workbook_path: Path,
+    source_sheet: str,
+    pc_id: str,
+    dji_nomal_dir: Path,
+    dji_night_dir: Path,
+    local_root: Path,
+    server_root: Path,
+    device_labels: list[str],    # ["M1_3", "M2_2"]
+    dji_dirs: list[Path],        # [Path("tools/_dji_M1_3"), Path("tools/_dji_M2_2")]
+    mode: str = "",
+) -> list[CaseManifest]:
+    """多设备模式：扫描各设备 DJI 目录，分配连续 case_id，写 xlsm 并返回所有 manifest。
+
+    返回的 manifest 按 case_id 排序，每个带 device_label。
+    """
+    from video_tagging_assistant.pipeline_models import CaseManifest
+
+    # 1. 扫描各设备 DJI 目录
+    device_djis: list[list[Path]] = []
+    for dji_dir in dji_dirs:
+        files = sorted(
+            [f for f in dji_dir.iterdir() if f.is_file() and f.suffix.lower() == ".mp4"],
+            key=lambda f: f.name
+        )
+        device_djis.append(files)
+
+    # 2. 获取起始 case 序号
+    workbook = load_workbook(workbook_path, data_only=True, keep_vba=True)
+    sheet = workbook[source_sheet]
+    headers = _header_map_for_row(sheet, 2)
+    starting_seq = get_next_case_sequence(workbook_path, pc_id)
+
+    # 3. 分配 case_id
+    all_manifests = []
+    seq = starting_seq
+    for idx, (label, dji_files) in enumerate(zip(device_labels, device_djis)):
+        for dji_file in dji_files:
+            case_id = f"case_{pc_id}_{seq:04d}"
+            row_index = sheet.max_row + 1
+
+            # 写入 xlsm 行
+            seq_col = headers.get("序号")
+            if seq_col:
+                sheet.cell(row_index, seq_col).value = case_id
+            rk_col = headers.get("RK_raw")
+            if rk_col:
+                sheet.cell(row_index, rk_col).value = ""
+            normal_col = headers.get("Action5Pro_Nomal")
+            if normal_col:
+                sheet.cell(row_index, normal_col).value = dji_file.name
+            status_col = headers.get("处理状态")
+            if status_col:
+                sheet.cell(row_index, status_col).value = ""
+
+            manifest = CaseManifest(
+                case_id=case_id,
+                row_index=row_index,
+                created_date=str(sheet.cell(1, 2).value or "").strip(),
+                mode=mode,
+                raw_path=Path("."),
+                vs_normal_path=dji_file,
+                vs_night_path=Path("."),
+                local_case_root=local_root,
+                server_case_dir=server_root / label,
+                remark="",
+                device_label=label,
+            )
+            all_manifests.append(manifest)
+            seq += 1
+
+    workbook.save(workbook_path)
+    return all_manifests
+
+
 def mark_row_processed(workbook_path: Path, source_sheet: str, row_index: int) -> None:
     """将指定行的处理状态标记为 R（已完成）。"""
     workbook = load_workbook(workbook_path, keep_vba=True)
