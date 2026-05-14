@@ -535,11 +535,18 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             progress_cb(0, 100, f"adb forward 失败: {e}，降级")
         return False
 
-    # 设备侧：cat files | nc
-    file_args = " ".join(f'"{name}"' for name, _ in file_list)
+    # 设备侧：文件列表推送到设备，循环读避免命令行过长
+    _list = "\n".join(name for name, _ in file_list)
+    _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
+    try:
+        _run([adb_exe, "shell", f"cat > {_list_path}"],
+             input=_list, capture_output=True, text=True, timeout=10, check=True)
+    except Exception:
+        pass  # 失败则降级到下面的 fallback
     shell_cmd = (
         f"cd '{remote_dir}' && "
-        f"cat {file_args} | {android_nc} -l -p {port}"
+        f"while read -r f; do cat \"$f\"; done < {_list_path} "
+        f"| {android_nc} -l -p {port}; rm -f {_list_path}"
     )
     shell_proc = _popen(
         [adb_exe, "shell", shell_cmd],
