@@ -72,7 +72,8 @@ class ExecutionTab(QWidget):
     def add_case(self, manifest) -> None:
         """把 case 加入界面队列，并通知后台 worker 开始处理。"""
         self._manifests[manifest.case_id] = manifest
-        item = QListWidgetItem(f"[ ] {manifest.case_id}  待执行")
+        dev = f"[{manifest.device_label}] " if getattr(manifest, 'device_label', '') else ""
+        item = QListWidgetItem(f"{dev}[ ] {manifest.case_id}  待执行")
         item.setData(256, manifest.case_id)  # Qt.UserRole = 256
         self._queue_list.addItem(item)
         self._worker.enqueue(manifest)
@@ -90,7 +91,9 @@ class ExecutionTab(QWidget):
         label.setText(f"{case_id}: {message}")
         item = self._find_item(case_id)
         if item:
-            item.setText(f"● {case_id}  pull {message}")
+            manifest = self._manifests.get(case_id)
+            dev = f"[{manifest.device_label}] " if manifest and getattr(manifest, 'device_label', '') else ""
+            item.setText(f"{dev}● {case_id}  pull {message}")
 
     def on_upload_progress(
         self, case_id: str, current: int, total: int, filename: str
@@ -105,7 +108,9 @@ class ExecutionTab(QWidget):
         label.setText(f"{case_id}: {current}/{total}  {filename}")
         item = self._find_item(case_id)
         if item:
-            item.setText(f"● {case_id}  upload {current}/{total}  {filename}")
+            manifest = self._manifests.get(case_id)
+            dev = f"[{manifest.device_label}] " if manifest and getattr(manifest, 'device_label', '') else ""
+            item.setText(f"{dev}● {case_id}  upload {current}/{total}  {filename}")
 
     def on_status_changed(
         self, case_id: str, step: str, status: str, message: str
@@ -115,20 +120,22 @@ class ExecutionTab(QWidget):
         item = self._find_item(case_id)
         if item is None:
             return
+        manifest = self._manifests.get(case_id)
+        dev = f"[{manifest.device_label}] " if manifest and getattr(manifest, 'device_label', '') else ""
 
         if status == "started":
-            item.setText(f"[ ] {case_id}  {step} 进行中")
+            item.setText(f"{dev}[ ] {case_id}  {step} 进行中")
         elif status == "completed":
             if step == "pull":
                 self._remove_pull_bar(case_id)
-                item.setText(f"[ ] {case_id}  {step} 完成，等待下一步")
+                item.setText(f"{dev}[ ] {case_id}  {step} 完成，等待下一步")
             elif step == "upload":
-                item.setText(f"[ok] {case_id}  已完成")
+                item.setText(f"{dev}[ok] {case_id}  已完成")
                 self._remove_upload_bar(case_id)
             else:
-                item.setText(f"[ ] {case_id}  {step} 完成，等待下一步")
+                item.setText(f"{dev}[ ] {case_id}  {step} 完成，等待下一步")
         elif status == "failed":
-            item.setText(f"[x] {case_id}  失败: {step} - {message}")
+            item.setText(f"{dev}[x] {case_id}  失败: {step} - {message}")
             self._add_retry_button(case_id)
             if step == "pull":
                 self._remove_pull_bar(case_id)
@@ -268,7 +275,8 @@ class ExecutionTab(QWidget):
             return
         item = self._find_item(case_id)
         if item:
-            item.setText(f"[ ] {case_id}  重试中")
+            dev = f"[{manifest.device_label}] " if getattr(manifest, 'device_label', '') else ""
+            item.setText(f"{dev}[ ] {case_id}  重试中")
         self._worker.enqueue(manifest)
         btn = self._retry_buttons.pop(case_id, None)
         if btn:

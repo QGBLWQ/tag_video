@@ -13,6 +13,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
 from video_tagging_assistant.case_ingest_orchestrator import move_case, pull_case, upload_case
+from video_tagging_assistant.device_profile import DeviceProfile
 from video_tagging_assistant.pipeline_models import CaseManifest
 
 _SENTINEL = None
@@ -28,6 +29,7 @@ class ExecutionWorker(QThread):
     def __init__(self, config: dict, parent=None) -> None:
         super().__init__(parent)
         self._config = config
+        self._devices: dict[str, DeviceProfile] = {}  # label -> profile
         self._queue: queue.Queue = queue.Queue()
         self._upload_queue: queue.Queue = queue.Queue()
         self._abort = threading.Event()
@@ -35,6 +37,9 @@ class ExecutionWorker(QThread):
     def enqueue(self, manifest: CaseManifest) -> None:
         """把一个 case 加入执行队列。"""
         self._queue.put(manifest)
+
+    def set_devices(self, devices: dict) -> None:
+        self._devices = devices
 
     def stop(self) -> None:
         """请求主循环在处理完当前 case 后退出。"""
@@ -58,8 +63,12 @@ class ExecutionWorker(QThread):
         mode = (manifest.mode or "").strip() or self._config.get("mode", "")
         if not mode:
             return None
+        # 多设备：server_root/label/mode/date/case_id
+        base = Path(server_root)
+        if manifest.device_label and manifest.device_label in self._devices:
+            base = base / manifest.device_label
         server_dest = (
-            Path(server_root) / mode / manifest.created_date / manifest.case_id
+            base / mode / manifest.created_date / manifest.case_id
             / f"{manifest.case_id}_RK_raw_{rk_suffix}"
         )
         from video_tagging_assistant.case_ingest_orchestrator import _server_reachable
@@ -98,9 +107,11 @@ class ExecutionWorker(QThread):
                 manifest = item
                 self.status_changed.emit(manifest.case_id, "pull", "started", "")
                 server_dest = self._build_server_dest(manifest)
+                device = self._devices.get(getattr(manifest, 'device_label', ''))
                 f = pull_pool.submit(pull_case, manifest, self._config,
                                      progress_cb=_make_pull_cb(manifest.case_id),
-                                     server_dest=server_dest)
+                                     server_dest=server_dest,
+                                     device=device)
                 pending_pulls[f] = manifest
 
             # 哨兵收到后等所有 pull 完成
@@ -148,7 +159,8 @@ class ExecutionWorker(QThread):
             with lock:
                 try:
                     self.status_changed.emit(manifest.case_id, "move", "started", "")
-                    move_case(manifest, self._config)
+                    device = self._devices.get(getattr(manifest, 'device_label', ''))
+                    move_case(manifest, self._config, device=device)
                     self.status_changed.emit(manifest.case_id, "move", "completed", "")
                     self._upload_queue.put(manifest)
                 except Exception as exc:
@@ -171,7 +183,9 @@ class ExecutionWorker(QThread):
                 return
             self.status_changed.emit(manifest.case_id, "upload", "started", "")
             try:
-                upload_case(manifest, self._config, progress_cb=_make_upload_cb(manifest))
+                device = self._devices.get(getattr(manifest, 'device_label', ''))
+                upload_case(manifest, self._config, progress_cb=_make_upload_cb(manifest),
+                            device=device)
                 try:
                     from video_tagging_assistant.excel_workbook import mark_row_processed
                     workbook_path = Path(self._config.get("workbook_path", ""))

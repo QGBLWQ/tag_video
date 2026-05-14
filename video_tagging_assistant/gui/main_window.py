@@ -29,7 +29,9 @@ from video_tagging_assistant.excel_workbook import (
     upsert_create_record_row,
     write_case_txt,
 )
+from video_tagging_assistant.device_profile import DeviceProfile
 from video_tagging_assistant.gui.alignment_tab import AlignmentTab
+from video_tagging_assistant.gui.device_setup_dialog import DeviceSetupDialog
 from video_tagging_assistant.gui.execution_tab import ExecutionTab
 from video_tagging_assistant.gui.execution_worker import ExecutionWorker
 from video_tagging_assistant.gui.review_panel import ReviewPanel
@@ -79,6 +81,33 @@ class MainWindow(QMainWindow):
         self._tabs.setTabEnabled(1, False)
         self._tabs.setTabEnabled(2, False)
         self._tabs.setTabEnabled(3, False)
+
+        # 检测多设备
+        self._devices: dict[str, DeviceProfile] = {}
+        try:
+            import subprocess
+            r = subprocess.run(
+                [config.get("adb_exe", "adb"), "devices"],
+                capture_output=True, text=True,
+                **(dict(creationflags=0x08000000) if hasattr(subprocess, 'STARTUPINFO') else {}))
+            lines = [l.strip() for l in r.stdout.splitlines() if l.strip() and "List" not in l]
+            serials = [l.split()[0] for l in lines if "\tdevice" in l or " device" in l]
+            if len(serials) > 1:
+                # Wait a bit for GUI to render, then show dialog
+                from PyQt5.QtCore import QTimer
+                def show_dialog():
+                    dlg = DeviceSetupDialog(serials, self)
+                    if dlg.exec_() == dlg.Accepted:
+                        for p in dlg.profiles():
+                            self._devices[p.label] = p
+                            # Ensure DJI dirs exist
+                            p.dji_dir.mkdir(parents=True, exist_ok=True)
+                        self._worker.set_devices(self._devices)
+                        self.statusBar().showMessage(
+                            f"已配置 {len(self._devices)} 台设备", 5000)
+                QTimer.singleShot(500, show_dialog)
+        except Exception:
+            pass  # 单设备模式，不做任何改变
 
         # 顶部 ADB 状态栏 + tabs
         self._adb_status_label = QLabel("ADB 状态: 检测中...")
