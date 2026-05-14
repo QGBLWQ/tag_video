@@ -562,6 +562,18 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
 
         sock.settimeout(timeout)
 
+        # 调试日志 → 文件（GUI 后台线程看不到 stdout）
+        def _dbg(msg):
+            try:
+                with open(_os.path.join(_os.path.dirname(__file__),
+                         "_tcp_debug.log"), "a", encoding="utf-8") as lf:
+                    lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            except Exception:
+                pass
+
+        _dbg(f"dest={dest} len={len(str(dest))}")
+        _dbg(f"file_list={len(file_list)} files total_bytes={total_bytes}")
+
         def _to_ext_path(p):
             s = str(p)
             if s.startswith("\\\\"):
@@ -572,7 +584,12 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 return "\\\\?\\" + s
 
         ext_dest = _to_ext_path(dest)
-        _os.makedirs(ext_dest, exist_ok=True)
+        _dbg(f"ext_dest len={len(ext_dest)}")
+        try:
+            _os.makedirs(ext_dest, exist_ok=True)
+        except Exception as e:
+            _dbg(f"makedirs FAIL: {e}")
+            raise
 
         # 写入队列 + 多线程并行写
         import queue as _queue
@@ -588,14 +605,16 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                     break
                 name, data = item
                 fpath = _os.path.join(dest, name)
+                ext_fpath = _to_ext_path(fpath)
                 try:
                     ext_dpath = _to_ext_path(_os.path.dirname(fpath))
                     _os.makedirs(ext_dpath, exist_ok=True)
-                    with open(_to_ext_path(fpath), "wb") as f:
+                    with open(ext_fpath, "wb") as f:
                         f.write(data)
                     with write_lock:
                         written_bytes[0] += len(data)
                 except Exception as e:
+                    _dbg(f"WRITE_ERR name={name} len(fpath)={len(fpath)} err={e}")
                     write_errors.append(str(e))
                 finally:
                     chunk_q.task_done()
@@ -611,7 +630,11 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         total_read = 0
         start = time.time()
         for name, size in file_list:
-            data = _recv_exactly(sock, size)
+            try:
+                data = _recv_exactly(sock, size)
+            except Exception as e:
+                _dbg(f"RECV_ERR name={name} size={size} err={e}")
+                raise
             total_read += len(data)
             chunk_q.put((name, data))
             if progress_cb:
