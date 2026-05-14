@@ -512,6 +512,14 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             pass
     _dbg(f"=== START dest={dest} files={len(remote_files)} ===")
 
+    # 清理设备上残留的 nc 进程，防止端口冲突
+    try:
+        _run([adb_exe, "shell", "pkill -f 'nc.*-l' 2>/dev/null"],
+             capture_output=True, timeout=3)
+        time.sleep(0.5)
+    except Exception:
+        pass
+
     android_nc = _find_android_nc(adb_exe)
     if not android_nc:
         _dbg("no nc, bail")
