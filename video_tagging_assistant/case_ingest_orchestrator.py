@@ -284,49 +284,6 @@ def _extract_via_python_tarfile(tar_path: str, dest: str,
                 progress_cb(total_files, total_files, f"解压 {pct}%  {member.name}")
 
 
-def _extract_tar_parallel_unc(tar_path: str, dest: str,
-                                progress_cb, total_files: int,
-                                workers: int = 32) -> None:
-    """tar 解压到 UNC 路径，多线程并行写 SMB 避免单文件协议开销。"""
-    import os as _os
-    import tarfile as _tarfile
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-    from concurrent.futures import as_completed as _ac
-
-    _os.makedirs(dest, exist_ok=True)
-    errors = []
-    written = [0]
-    lock = threading.Lock()
-
-    def _write_one(member, data):
-        fname = member.name.lstrip("./")
-        fpath = _os.path.join(dest, fname.replace("/", _os.sep))
-        _os.makedirs(_os.path.dirname(fpath), exist_ok=True)
-        with open(fpath, "wb") as f:
-            f.write(data)
-        with lock:
-            written[0] += 1
-            if progress_cb and total_files > 0:
-                progress_cb(total_files, total_files,
-                            f"解压 {written[0]}/{total_files}  {member.name}")
-
-    with _tarfile.open(tar_path, mode="r") as tar:
-        members = [m for m in tar.getmembers() if m.isfile()]
-        with _TPE(max_workers=workers) as pool:
-            futures = []
-            for member in members:
-                data = tar.extractfile(member).read()
-                futures.append(pool.submit(_write_one, member, data))
-            for fut in _ac(futures):
-                try:
-                    fut.result()
-                except Exception as e:
-                    errors.append(str(e))
-
-    if errors:
-        raise RuntimeError(f"并行解压到服务器失败: {'; '.join(errors[:3])}")
-
-
 def _extract_tar_file(tar_path: str, dest: str,
                        progress_cb, total_files: int) -> None:
     """按优先级尝试解压：系统 tar > 7-Zip > Python tarfile。"""
@@ -536,122 +493,138 @@ def _find_android_nc(adb_exe: str) -> str | None:
 
 def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict) -> bool:
-    """adb forward + 设备侧 tar | nc 隧道传输，流式解压到目标目录。
+    """adb forward + 设备侧 cat | nc 原始流直写目标目录。
 
-    步骤:
-      1. 查找设备 nc/tar
-      2. 分配本地端口，adb forward tcp:PORT tcp:PORT
-      3. 设备侧 shell 起: cd remote_dir && tar cf - . | nc -l -p PORT
-      4. PC 侧 socket 连 127.0.0.1:PORT，收字节流，边收边解压
-      5. 清理 forward 和 shell 进程
+    - 设备: cat file1 file2 ... | nc -l -p PORT
+    - PC: 按已知文件大小切分流，队列 + 多线程并行写目标路径
+    - 零 tar 编解码，零临时文件
     成功返回 True，失败返回 False（让上层回退）。
     """
+    import os as _os
     import socket as _socket
 
-    android_tar = _find_android_tar(adb_exe)
     android_nc = _find_android_nc(adb_exe)
-    if not android_tar or not android_nc:
+    if not android_nc:
         if progress_cb:
-            progress_cb(0, len(remote_files),
-                        f"设备缺少 tar/nc (tar={bool(android_tar)}, nc={bool(android_nc)})，降级")
+            progress_cb(0, len(remote_files), "设备无 nc，降级")
         return False
 
     port = _alloc_forward_port(adb_exe)
-    total_est = sum(remote_files.values())
-    total_files = len(remote_files)
+    file_list = list(remote_files.items())  # [(name, size), ...]
+    total_bytes = sum(s for _, s in file_list)
+    total_files = len(file_list)
 
     if progress_cb:
-        progress_cb(0, total_files, f"TCP 隧道 (port {port})")
+        progress_cb(0, 100, f"TCP raw (port {port})")
 
-    # 建立 forward
     try:
         _run([adb_exe, "forward", f"tcp:{port}", f"tcp:{port}"],
              capture_output=True, timeout=10, check=True)
     except Exception as e:
         if progress_cb:
-            progress_cb(0, total_files, f"adb forward 失败: {e}，降级")
+            progress_cb(0, 100, f"adb forward 失败: {e}，降级")
         return False
 
-    # 设备侧起 shell：先 nc listen，再 tar 压入管道
+    # 设备侧：cat files | nc
+    file_args = " ".join(f'"{name}"' for name, _ in file_list)
     shell_cmd = (
-        f"cd {remote_dir} && "
-        f"{android_tar} cf - . | {android_nc} -l -p {port}"
+        f"cd '{remote_dir}' && "
+        f"cat {file_args} | {android_nc} -l -p {port}"
     )
     shell_proc = _popen(
         [adb_exe, "shell", shell_cmd],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
+    time.sleep(1)
+    if shell_proc.poll() is not None:
+        err = shell_proc.stderr.read().decode("utf-8", errors="replace")
+        if progress_cb:
+            progress_cb(0, 100, f"shell 退出: {err[:100]}，降级")
+        _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
+             capture_output=True, timeout=5)
+        return False
 
     sock = None
     ok = False
     try:
-        # 等 nc 真正进入 listen 状态，重试连接
         deadline = time.time() + 10
-        last_exc = None
         while time.time() < deadline:
             try:
                 sock = _socket.create_connection(("127.0.0.1", port), timeout=2)
                 break
-            except (ConnectionRefusedError, _socket.timeout, OSError) as e:
-                last_exc = e
+            except (ConnectionRefusedError, _socket.timeout, OSError):
                 time.sleep(0.1)
-        if sock is None:
+        else:
             if progress_cb:
-                progress_cb(0, total_files, f"连接失败: {last_exc}，降级")
+                progress_cb(0, 100, "连接 nc 超时，降级")
             return False
 
         sock.settimeout(timeout)
+        _os.makedirs(dest, exist_ok=True)
 
-        # 边收边写临时 tar 文件，收完再解压（和现有 _pull_via_tar 一致）
-        import os as _os
-        import tempfile as _tmp
-        tmp_fd, tmp_path = _tmp.mkstemp(suffix=".tar")
+        # 写入队列 + 多线程并行写
+        import queue as _queue
+        chunk_q = _queue.Queue(maxsize=64)
+        write_errors = []
+        written_bytes = [0]
+        write_lock = threading.Lock()
+
+        def _writer():
+            while True:
+                item = chunk_q.get()
+                if item is None:
+                    break
+                name, data = item
+                try:
+                    fpath = _os.path.join(dest, name)
+                    _os.makedirs(_os.path.dirname(fpath), exist_ok=True)
+                    with open(fpath, "wb") as f:
+                        f.write(data)
+                    with write_lock:
+                        written_bytes[0] += len(data)
+                except Exception as e:
+                    write_errors.append(str(e))
+                finally:
+                    chunk_q.task_done()
+
+        # UNC 路径用并行写（打满带宽），本地路径单线程足够
+        workers = 32 if (str(dest).startswith("\\\\") or str(dest).startswith("//")) else 4
+        writers = []
+        for _ in range(workers):
+            t = threading.Thread(target=_writer, daemon=True)
+            t.start()
+            writers.append(t)
+
         total_read = 0
         start = time.time()
-        try:
-            with _os.fdopen(tmp_fd, "wb") as f:
-                while True:
-                    try:
-                        chunk = sock.recv(16 * 1024 * 1024)
-                    except _socket.timeout:
-                        break
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    total_read += len(chunk)
-                    if progress_cb and total_est > 0:
-                        elapsed = max(time.time() - start, 0.001)
-                        mb = total_read / (1024 * 1024)
-                        speed = mb / elapsed
-                        pct = min(int(total_read / total_est * 100), 99)
-                        progress_cb(pct, 100, f"TCP {pct}% {mb:.0f}MB {speed:.1f}MB/s")
-
-            if total_read < 1024:
-                if progress_cb:
-                    progress_cb(0, total_files, f"TCP 流仅 {total_read}B，降级")
-                try:
-                    _os.unlink(tmp_path)
-                except OSError:
-                    pass
-                return False
-
-            # 解压（UNC 路径用多线程并行写，本地路径走原生工具）
+        for name, size in file_list:
+            data = _recv_exactly(sock, size)
+            total_read += len(data)
+            chunk_q.put((name, data))
             if progress_cb:
-                progress_cb(total_files * 0.9, total_files, "TCP 接收完成，解压中...")
-            if str(dest).startswith("\\\\") or str(dest).startswith("//"):
-                _extract_tar_parallel_unc(tmp_path, dest, progress_cb, total_files)
-            else:
-                _extract_tar_file(tmp_path, dest, progress_cb, total_files)
-            ok = True
-        finally:
-            try:
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
+                elapsed = max(time.time() - start, 0.001)
+                mb_read = total_read / (1024 * 1024)
+                speed = mb_read / elapsed
+                pct = int(total_read / total_bytes * 100) if total_bytes > 0 else 0
+                progress_cb(pct, 100,
+                            f"TCP {pct}% {mb_read:.0f}MB {speed:.1f}MB/s")
+
+        chunk_q.join()
+        for _ in writers:
+            chunk_q.put(None)
+        for t in writers:
+            t.join()
+
+        if write_errors:
+            if progress_cb:
+                progress_cb(0, 100, f"写入失败: {'; '.join(write_errors[:3])}，降级")
+            return False
+
+        ok = True
     except Exception as e:
         if progress_cb:
-            progress_cb(0, total_files, f"TCP 异常: {e}，降级")
+            progress_cb(0, 100, f"TCP 异常: {e}，降级")
     finally:
         if sock is not None:
             try:
@@ -664,7 +637,6 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 shell_proc.wait(timeout=3)
             except Exception:
                 pass
-        # 清理 forward
         try:
             _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
                  capture_output=True, timeout=5)
@@ -672,6 +644,18 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             pass
 
     return ok
+
+
+def _recv_exactly(sock, n: int) -> bytes:
+    """从 socket 精确读取 n 字节。"""
+    buf = bytearray()
+    while len(buf) < n:
+        need = n - len(buf)
+        chunk = sock.recv(min(need, 16 * 1024 * 1024))
+        if not chunk:
+            raise ConnectionError(f"socket 断开: 已读 {len(buf)}/{n} 字节")
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
