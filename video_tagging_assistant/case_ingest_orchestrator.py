@@ -512,14 +512,6 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             pass
     _dbg(f"=== START dest={dest} files={len(remote_files)} ===")
 
-    # 清理设备上残留的 nc 进程，防止端口冲突
-    try:
-        _run([adb_exe, "shell", "pkill -f 'nc.*-l' 2>/dev/null"],
-             capture_output=True, timeout=3)
-        time.sleep(0.5)
-    except Exception:
-        pass
-
     android_nc = _find_android_nc(adb_exe)
     if not android_nc:
         _dbg("no nc, bail")
@@ -559,18 +551,37 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         f"{_bb} xargs -n 50 cat < {_list_path} "
         f"| {android_nc} -l -p {port}; rm -f {_list_path}"
     )
-    shell_proc = _popen(
-        [adb_exe, "shell", shell_cmd],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    time.sleep(1)
-    if shell_proc.poll() is not None:
+    # 尝试启动 shell，遇到端口占用自动换端口重试
+    for _retry in range(3):
+        shell_proc = _popen(
+            [adb_exe, "shell", shell_cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(1)
+        if shell_proc.poll() is None:
+            break  # 进程正常运行
+
         err = shell_proc.stderr.read().decode("utf-8", errors="replace")
+        if "Address in use" in err:
+            _dbg(f"port {port} in use, retry with new port")
+            _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
+                 capture_output=True, timeout=5)
+            port = _alloc_forward_port(adb_exe)
+            shell_cmd = (
+                f"cd '{remote_dir}' && "
+                f"{_bb} xargs -n 50 cat < {_list_path} "
+                f"| {android_nc} -l -p {port}; rm -f {_list_path}"
+            )
+            continue
         if progress_cb:
             progress_cb(0, 100, f"shell 退出: {err[:100]}，降级")
         _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
              capture_output=True, timeout=5)
+        return False
+    else:
+        if progress_cb:
+            progress_cb(0, 100, "端口冲突重试 3 次均失败，降级")
         return False
 
     sock = None
