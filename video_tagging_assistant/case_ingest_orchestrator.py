@@ -97,6 +97,7 @@ def _adb_list_files(adb_exe: str, remote_dir: str, timeout: int = 30) -> dict:
                 files[name] = size
     return files
 
+from video_tagging_assistant.device_profile import DeviceProfile
 from video_tagging_assistant.copy_worker import copy_declared_files
 from video_tagging_assistant.pull_worker import (
     run_resumable_pull,
@@ -841,12 +842,9 @@ def _pull_via_adb(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         raise RuntimeError(f"adb pull 失败: {stderr_text}")
 
 
-def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> None:
-    """增量 pull。若 server_dest 可达，RK 直接解压到服务器，跳过本地。
-
-    Args:
-        server_dest: 服务器上 case_RK_raw 目录的完整路径，若为 None 或不可达则走本地。
-    """
+def pull_case(manifest, config: dict, progress_cb=None, server_dest=None,
+              device: DeviceProfile = None) -> None:
+    """增量 pull。多设备时 device 指定目标设备。"""
     rk_suffix = manifest.raw_path.name
 
     # 确定目标目录：优先直传服务器
@@ -857,7 +855,8 @@ def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> Non
             use_server = True
             dest = Path(server_path)
             if progress_cb:
-                progress_cb(0, 1, f"直传服务器: {server_path}")
+                dev_str = f"[{device.label}] " if device else ""
+                progress_cb(0, 1, f"{dev_str}直传服务器: {server_path}")
         elif progress_cb:
             progress_cb(0, 1, "服务器不可达，降级到本地")
 
@@ -866,7 +865,7 @@ def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> Non
 
     dest.mkdir(parents=True, exist_ok=True)
     remote_dir = f"{config['dut_root']}/{rk_suffix}"
-    adb_exe = config["adb_exe"]
+    adb_exe = f"adb {device.adb_prefix}" if device else config["adb_exe"]
     timeout = int(config.get("adb_pull_timeout", 600))
 
     try:
@@ -927,7 +926,7 @@ def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> Non
         progress_cb(len(remote_files), len(remote_files), "传输完成")
 
 
-def move_case(manifest, config: dict) -> None:
+def move_case(manifest, config: dict, device: DeviceProfile = None) -> None:
     """整理 case 目录。rk_on_server=True 时只复制 DJI，跳过 RK move。"""
     rk_suffix = manifest.raw_path.name
     case_id = manifest.case_id
@@ -944,15 +943,16 @@ def move_case(manifest, config: dict) -> None:
                 str(dest_dir / f"{case_id}_RK_raw_{rk_suffix}"),
             )
 
-    if manifest.vs_normal_path and str(manifest.vs_normal_path) != ".":
-        if not manifest.vs_normal_path.exists():
+    # 使用 device.dji_dir 下的 DJI 文件（若 device 提供）
+    dji_src = manifest.vs_normal_path
+    if device and device.dji_dir:
+        dji_src = device.dji_dir / manifest.vs_normal_path.name
+    if dji_src and str(dji_src) != ".":
+        if not dji_src.exists():
             raise FileNotFoundError(
-                f"DJI 普通视频不存在，请检查 dji_nomal_dir 配置: {manifest.vs_normal_path}"
+                f"DJI 普通视频不存在，请检查 DJI 目录: {dji_src}"
             )
-        shutil.copy2(
-            str(manifest.vs_normal_path),
-            str(dest_dir / f"{case_id}_{manifest.vs_normal_path.name}"),
-        )
+        shutil.copy2(str(dji_src), str(dest_dir / f"{case_id}_{dji_src.name}"))
     if manifest.vs_night_path and str(manifest.vs_night_path) != ".":
         if manifest.vs_night_path.exists():
             shutil.copy2(
@@ -1095,7 +1095,8 @@ def _robocopy_with_progress(src: str, dest: str, total_files: int, progress_cb=N
                     f"{total_files}/{total_files} 完成")
 
 
-def upload_case(manifest, config: dict, progress_cb=None) -> None:
+def upload_case(manifest, config: dict, progress_cb=None,
+                device: DeviceProfile = None) -> None:
     """上传 case 目录到服务器。rk_on_server=True 时只上传 DJI + txt。"""
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
