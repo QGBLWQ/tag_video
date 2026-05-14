@@ -442,6 +442,31 @@ def load_get_list_manifests(
         )
     )
 
+    # 构建 DJI 文件名 → 已审批 case_id 的映射（从创建记录 VS_Nomal 列）
+    dji_to_approved_case: Dict[str, str] = {}
+    try:
+        create_wb = load_workbook(workbook_path, keep_vba=True, data_only=True)
+        if "创建记录" in create_wb.sheetnames:
+            create_sheet = create_wb["创建记录"]
+            create_headers = _header_map(create_sheet)
+            vs_col = create_headers.get("VS_Nomal")
+            case_col = create_headers.get("文件夹名")
+            if vs_col is not None and case_col is not None:
+                for ri in range(2, create_sheet.max_row + 1):
+                    vs_val = str(create_sheet.cell(ri, vs_col).value or "").strip()
+                    case_val = str(create_sheet.cell(ri, case_col).value or "").strip()
+                    if vs_val and case_val:
+                        fname = vs_val.replace("/", "\\").split("\\")[-1].strip()
+                        # 从 "{case_id}_{dji_name}" 提取 dji_name 部分
+                        prefix = f"{case_val}_"
+                        if fname.startswith(prefix):
+                            dji_name = fname[len(prefix):]
+                            if dji_name:
+                                dji_to_approved_case[dji_name] = case_val
+        create_wb.close()
+    except Exception:
+        pass
+
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
     dji_index = 0
@@ -466,7 +491,15 @@ def load_get_list_manifests(
         if not rk_raw and normal == Path(".") and night == Path("."):
             continue
 
-        case_id = f"case_{pc_id}_{sequence:04d}"
+        # 若该 DJI 之前已审批过，复用原 case_id；否则用新序号
+        dji_key = normal.name if normal != Path(".") else ""
+        if dji_key and dji_key in dji_to_approved_case:
+            case_id = dji_to_approved_case[dji_key]
+            message = (f"检测到 {case_id} 已审批但未执行，复用原 case_id。"
+                       f"如需覆盖请在审核页重新通过。")
+        else:
+            case_id = f"case_{pc_id}_{sequence:04d}"
+            sequence += 1
         manifests.append(
             CaseManifest(
                 case_id=case_id,
