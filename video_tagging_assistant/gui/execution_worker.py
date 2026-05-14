@@ -49,6 +49,24 @@ class ExecutionWorker(QThread):
             app.processEvents()
         return result
 
+    def _build_server_dest(self, manifest):
+        """构造服务器 RK 目录路径。server_root 不可达时返回 None。"""
+        server_root = self._config.get("server_upload_root", "")
+        if not server_root:
+            return None
+        rk_suffix = manifest.raw_path.name
+        mode = (manifest.mode or "").strip() or self._config.get("mode", "")
+        if not mode:
+            return None
+        server_dest = (
+            Path(server_root) / mode / manifest.created_date / manifest.case_id
+            / f"{manifest.case_id}_RK_raw_{rk_suffix}"
+        )
+        from video_tagging_assistant.case_ingest_orchestrator import _server_reachable
+        if _server_reachable(str(server_dest)):
+            return server_dest
+        return None
+
     def run(self) -> None:
         """流式执行：入队即拉，pull 并发，move 按完成顺序串行，upload 独立线程。"""
         upload_thread = threading.Thread(target=self._upload_loop, daemon=True)
@@ -79,8 +97,10 @@ class ExecutionWorker(QThread):
 
                 manifest = item
                 self.status_changed.emit(manifest.case_id, "pull", "started", "")
+                server_dest = self._build_server_dest(manifest)
                 f = pull_pool.submit(pull_case, manifest, self._config,
-                                     progress_cb=_make_pull_cb(manifest.case_id))
+                                     progress_cb=_make_pull_cb(manifest.case_id),
+                                     server_dest=server_dest)
                 pending_pulls[f] = manifest
 
             # 哨兵收到后等所有 pull 完成
