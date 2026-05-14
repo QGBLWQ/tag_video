@@ -284,15 +284,16 @@ class MainWindow(QMainWindow):
         # 检测"已写入但未执行"的 case：DJI 文件名已在"创建记录"VS_Nomal 中，
         # 但"获取列表"处理状态未 R（manifests 已排除 R 行，所以这里全都是未 R 的）
         written_names = find_written_dji_names(self._workbook_path)
-        # VS_Nomal 存的是 "{case_id}_{dji_name}"，所以匹配也要加 case_id 前缀
+        # VS_Nomal 存的是 "{case_id}_{dji_name}"。
+        # 不能拼 manifest.case_id，因为重启后 get_next_case_sequence 会跳过已审批的序号，
+        # 导致同一个 DJI 被分配新的 case_id。改用 DJI 文件名做 endswith 匹配。
         already_written = []
         print(f"[DETECT_WRITTEN] checking {len(manifests)} manifests "
               f"against {len(written_names)} written names")
         for m in manifests:
-            lookup = f"{m.case_id}_{m.vs_normal_path.name}"
-            hit = lookup in written_names
-            print(f"[DETECT_WRITTEN]   manifest={m.case_id} dji={m.vs_normal_path.name} "
-                  f"lookup={lookup} hit={hit}")
+            dji_name = m.vs_normal_path.name
+            hit = any(w.endswith(dji_name) for w in written_names)
+            print(f"[DETECT_WRITTEN]   manifest={m.case_id} dji={dji_name} hit={hit}")
             if hit:
                 already_written.append(m)
         if not already_written:
