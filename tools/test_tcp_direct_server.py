@@ -180,7 +180,7 @@ def main():
             print(f"解压到服务器: {server_dest} ...")
             extract_start = time.time()
             os.makedirs(server_dest, exist_ok=True)
-            _extract_tar_file(tmp_path, server_dest, None, len(file_list))
+            _extract_tar_file(tmp_path, server_dest, None, len(remote_files))
             extract_time = time.time() - extract_start
 
             # 验证
