@@ -536,7 +536,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
         return False
 
     # 设备侧：文件列表推送到设备，循环读避免命令行过长
-    _list = "\n".join(name for name, _ in file_list)
+    _list = "\n".join(name for name, _ in file_list) + "\n"
     _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
     try:
         _run([adb_exe, "shell", f"cat > {_list_path}"],
