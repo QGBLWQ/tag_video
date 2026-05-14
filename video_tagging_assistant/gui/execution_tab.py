@@ -224,7 +224,7 @@ class ExecutionTab(QWidget):
             # 设备 nc 进程
             r = subprocess.run(
                 ["adb", "shell",
-                 "ps | grep 'nc ' | awk '{print $1}' | head -5"],
+                 "for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'nc -l' && echo $(basename $p); done | head -5"],
                 capture_output=True, text=True, timeout=5, **kw)
             pids = [l.strip() for l in r.stdout.splitlines() if l.strip()]
             if pids:
@@ -244,7 +244,7 @@ class ExecutionTab(QWidget):
         try:
             subprocess.run(
                 ["adb", "shell",
-                 "ps | grep 'nc ' | awk '{print $1}' | xargs kill 2>/dev/null; "
+                 "for p in /proc/[0-9]*; do tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'nc -l' && kill $(basename $p) 2>/dev/null; done; "
                  "rm -f /mnt/nvme/_pull_list_*.txt"],
                 capture_output=True, timeout=5, **kw)
             # 移除所有 forward
