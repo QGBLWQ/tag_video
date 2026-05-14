@@ -744,7 +744,7 @@ def pull_case(manifest, config: dict, progress_cb=None, server_dest=None) -> Non
 
 
 def move_case(manifest, config: dict) -> None:
-    """把 pull 下来的 RK 数据与 DJI 视频整理到最终 case 目录。"""
+    """整理 case 目录。rk_on_server=True 时只复制 DJI，跳过 RK move。"""
     rk_suffix = manifest.raw_path.name
     case_id = manifest.case_id
     local_root = Path(config["local_case_root"])
@@ -752,10 +752,14 @@ def move_case(manifest, config: dict) -> None:
     dest_dir = local_root / mode / manifest.created_date / case_id
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    shutil.move(
-        str(local_root / f"{case_id}_RK_raw_{rk_suffix}"),
-        str(dest_dir / f"{case_id}_RK_raw_{rk_suffix}"),
-    )
+    if not manifest.rk_on_server:
+        local_rk_dir = local_root / f"{case_id}_RK_raw_{rk_suffix}"
+        if local_rk_dir.exists():
+            shutil.move(
+                str(local_rk_dir),
+                str(dest_dir / f"{case_id}_RK_raw_{rk_suffix}"),
+            )
+
     if manifest.vs_normal_path and str(manifest.vs_normal_path) != ".":
         if not manifest.vs_normal_path.exists():
             raise FileNotFoundError(
@@ -772,7 +776,7 @@ def move_case(manifest, config: dict) -> None:
                 str(dest_dir / f"{case_id}_night_{manifest.vs_night_path.name}"),
             )
 
-    # 清理空的临时目录残留：local_root 下任何以 case_id 开头的空目录都删掉
+    # 清理空的临时目录残留
     for entry in local_root.iterdir():
         if entry.is_dir() and entry.name.startswith(case_id) and not any(entry.iterdir()):
             try:
@@ -908,16 +912,30 @@ def _robocopy_with_progress(src: str, dest: str, total_files: int, progress_cb=N
 
 
 def upload_case(manifest, config: dict, progress_cb=None) -> None:
-    """把本地 case 目录复制到服务器上传目录。"""
+    """上传 case 目录到服务器。rk_on_server=True 时只上传 DJI + txt。"""
     local_root = Path(config["local_case_root"])
     server_root = Path(config["server_upload_root"])
     mode = (manifest.mode or "").strip() or config["mode"]
     workers = int(config.get("upload_workers", 8))
     src = local_root / mode / manifest.created_date / manifest.case_id
     dest = server_root / mode / manifest.created_date / manifest.case_id
-    # 只检查 RK 数据是否已存在（txt 可能先到但不算已完成）
+
+    if manifest.rk_on_server:
+        # RK 已在服务器 — 只补传 DJI normal/night/txt
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import shutil as _shutil
+        for item in src.iterdir():
+            if item.is_dir() and "RK_raw" in item.name:
+                continue
+            if item.is_dir():
+                _shutil.copytree(str(item), str(dest / item.name), dirs_exist_ok=True)
+            else:
+                _shutil.copy2(str(item), str(dest / item.name))
+        return
+
+    # 原有逻辑：整目录上传
     rk_subdir = dest / f"{manifest.case_id}_RK_raw_{manifest.raw_path.name}"
     if rk_subdir.exists() and any(rk_subdir.iterdir()):
-        return  # RK data already uploaded
+        return
     dest.parent.mkdir(parents=True, exist_ok=True)
     _copytree_with_progress(src, dest, progress_cb, workers=workers)
