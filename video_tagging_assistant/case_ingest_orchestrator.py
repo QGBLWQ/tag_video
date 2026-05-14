@@ -561,17 +561,8 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             return False
 
         sock.settimeout(timeout)
-        _os.makedirs(dest, exist_ok=True)
-
-        # 写入队列 + 多线程并行写
-        import queue as _queue
-        chunk_q = _queue.Queue(maxsize=64)
-        write_errors = []
-        written_bytes = [0]
-        write_lock = threading.Lock()
 
         def _to_ext_path(p):
-            """Windows 长路径前缀。"""
             s = str(p)
             if s.startswith("\\\\"):
                 return "\\\\?\\UNC" + s[1:]
@@ -579,6 +570,16 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                 return "//?/UNC" + s[1:]
             else:
                 return "\\\\?\\" + s
+
+        ext_dest = _to_ext_path(dest)
+        _os.makedirs(ext_dest, exist_ok=True)
+
+        # 写入队列 + 多线程并行写
+        import queue as _queue
+        chunk_q = _queue.Queue(maxsize=64)
+        write_errors = []
+        written_bytes = [0]
+        write_lock = threading.Lock()
 
         def _writer():
             while True:
