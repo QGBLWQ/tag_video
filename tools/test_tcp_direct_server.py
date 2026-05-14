@@ -176,42 +176,61 @@ def main():
             tar_mb = total_read / (1024 * 1024)
             print(f"\n[OK] 接收完成: {tar_mb:.0f}MB, {recv_time:.1f}s, {tar_mb/recv_time:.1f}MB/s")
 
-            # ★ 两阶段：先解压到本地（SSD 快）→ robocopy 并行复制到服务器 ★
-            import tempfile as _tmp
-            local_extract = _tmp.mkdtemp(prefix="tcp_extract_")
-            try:
-                print(f"本地解压: {local_extract} ...")
-                extract_start = time.time()
-                _extract_tar_file(tmp_path, local_extract, None, len(remote_files))
-                extract_time = time.time() - extract_start
-                print(f"[OK] 本地解压: {extract_time:.1f}s")
+            # ★ 多线程并行写服务器：逐文件解压，线程池并发写 SMB ★
+            import tarfile as _tarfile
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            from concurrent.futures import as_completed as _ac
 
-                # robocopy /MT 并行复制到服务器
-                print(f"复制到服务器: {server_dest} ...")
-                copy_start = time.time()
-                from video_tagging_assistant.case_ingest_orchestrator import _copytree_with_progress
-                os.makedirs(server_dest, exist_ok=True)
-                _copytree_with_progress(Path(local_extract), Path(server_dest), None, workers=32)
-                copy_time = time.time() - copy_start
-                print(f"[OK] 复制完成: {copy_time:.1f}s")
-            finally:
-                shutil.rmtree(local_extract, ignore_errors=True)
-            # 验证服务器上的文件
-            actual_files = sum(1 for _ in Path(server_dest).rglob("*") if _.is_file())
-            actual_bytes = sum(
-                f.stat().st_size for f in Path(server_dest).rglob("*") if f.is_file()
-            )
+            extract_start = time.time()
+            os.makedirs(server_dest, exist_ok=True)
+            server_written = [0]
+            server_bytes = [0]
+            extract_lock = threading.Lock()
+            errors = []
+
+            def _write_one_to_server(member, data):
+                """单个文件写服务器（线程池调用）。"""
+                fname = member.name.lstrip("./")
+                fpath = os.path.join(server_dest, fname.replace("/", os.sep))
+                os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                with open(fpath, "wb") as f:
+                    f.write(data)
+                with extract_lock:
+                    server_written[0] += 1
+                    server_bytes[0] += len(data)
+
+            # 打开 tar，逐个 member 读取数据 → 提交线程池写服务器
+            with _tarfile.open(tmp_path, mode="r") as tar:
+                members = [m for m in tar.getmembers() if m.isfile()]
+                with _TPE(max_workers=32) as pool:
+                    futures = []
+                    for member in members:
+                        data = tar.extractfile(member).read()
+                        futures.append(pool.submit(_write_one_to_server, member, data))
+                    for fut in _ac(futures):
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            errors.append(str(e))
+
+            if errors:
+                print(f"[FAIL] 写入错误: {errors[:3]}")
+                return
+
+            extract_time = time.time() - extract_start
+            # 验证
+            actual_files = server_written[0]
+            actual_bytes = server_bytes[0]
             actual_mb = actual_bytes / (1024 * 1024)
-            total_time = recv_time + extract_time + copy_time
+            total_time = recv_time + extract_time
 
             print(f"\n{'='*50}")
             print("结果")
             print(f"{'='*50}")
             print(f"  文件数:     {actual_files}")
             print(f"  数据量:     {tar_mb:.0f}MB (tar) / {actual_mb:.0f}MB (解压)")
-            print(f"  接收耗时:   {recv_time:.1f}s  ({tar_mb/recv_time:.1f}MB/s)")
-            print(f"  本地解压:   {extract_time:.1f}s")
-            print(f"  复制服务器: {copy_time:.1f}s  ({actual_mb/copy_time:.1f}MB/s)")
+            print(f"  TCP 接收:   {recv_time:.1f}s  ({tar_mb/recv_time:.1f}MB/s)")
+            print(f"  并行写SMB:  {extract_time:.1f}s  ({actual_mb/extract_time:.1f}MB/s, 32线程)")
             print(f"  总耗时:     {total_time:.1f}s  ({actual_mb/total_time:.1f}MB/s)")
             print(f"  服务器路径: {server_dest}")
 
