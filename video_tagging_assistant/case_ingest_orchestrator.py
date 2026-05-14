@@ -503,7 +503,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     import os as _os
     import socket as _socket
 
-    _LOG_PATH = "C:/Users/19872/Desktop/work！/tools/_tcp_debug.log"
+    _LOG_PATH = "E:/DV/2.1/test/tag_video/tools/_tcp_debug.log"
     def _dbg(msg):
         try:
             with open(_LOG_PATH, "a", encoding="utf-8") as lf:
