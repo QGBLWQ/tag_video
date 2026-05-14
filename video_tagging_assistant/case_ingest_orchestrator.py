@@ -515,8 +515,9 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     # 清理设备端所有残留的 nc 进程（避免端口占用）
     try:
         _run([adb_exe, "shell",
-              "ps | grep 'nc ' | awk '{print $1}' | xargs kill 2>/dev/null; "
-              "rm -f /mnt/nvme/_pull_list_*.txt"],
+              "for p in /proc/[0-9]*; do "
+              "tr '\\0' ' ' < $p/cmdline 2>/dev/null | grep -q 'nc -l' && kill $(basename $p) 2>/dev/null; "
+              "done; rm -f /mnt/nvme/_pull_list_*.txt"],
              capture_output=True, timeout=5)
         time.sleep(0.5)
     except Exception:
