@@ -516,7 +516,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     try:
         _run([adb_exe, "shell",
               "for p in /proc/[0-9]*/cmdline; do "
-              "grep -q 'nc ' \"$p\" 2>/dev/null && kill $(basename $(dirname $p)) 2>/dev/null; "
+              "grep -aq 'nc' \"$p\" 2>/dev/null && kill $(basename $(dirname $p)) 2>/dev/null; "
               "done; rm -f /mnt/nvme/_pull_list_*.txt"],
              capture_output=True, timeout=5)
         time.sleep(0.5)
