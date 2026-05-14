@@ -284,8 +284,9 @@ class MainWindow(QMainWindow):
         # 检测"已写入但未执行"的 case：DJI 文件名已在"创建记录"VS_Nomal 中，
         # 但"获取列表"处理状态未 R（manifests 已排除 R 行，所以这里全都是未 R 的）
         written_names = find_written_dji_names(self._workbook_path)
+        # VS_Nomal 存的是 "{case_id}_{dji_name}"，所以匹配也要加 case_id 前缀
         already_written = [m for m in manifests
-                           if m.vs_normal_path.name in written_names]
+                           if f"{m.case_id}_{m.vs_normal_path.name}" in written_names]
         if already_written:
             lines = "\n".join(f"  • {m.case_id}  ({m.vs_normal_path.name})"
                               for m in already_written)
