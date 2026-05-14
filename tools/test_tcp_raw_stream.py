@@ -154,39 +154,56 @@ def main():
         lock = threading.Lock()
         errors = []
 
-        def _write_one(name: str, data: bytes):
-            fpath = os.path.join(server_dest, name)
-            os.makedirs(os.path.dirname(fpath), exist_ok=True)
-            with open(fpath, "wb") as f:
-                f.write(data)
-            with lock:
-                total_written[0] += len(data)
+        # 边读边写：socket 收 chunk → 提交线程池写 SMB → 继续收下一个 chunk
+        import queue as _queue
+        chunk_q = _queue.Queue(maxsize=WRITE_WORKERS * 2)
+        write_done = threading.Event()
 
-        with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as pool:
-            futures = []
-            for idx, (name, size) in enumerate(file_list):
-                # 从 socket 精确读取 size 字节
-                data = _recv_exactly(sock, size)
-                total_read[0] += len(data)
-                # 提交线程池写服务器
-                futures.append(pool.submit(_write_one, name, data))
-
-                # 进度
-                elapsed = max(time.time() - total_start, 0.001)
-                mb_read = total_read[0] / (1024 * 1024)
-                mb_written = total_written[0] / (1024 * 1024)
-                pct = int((idx + 1) / len(file_list) * 100)
-                print(f"\r  [{idx+1:3d}/{len(file_list)}] {pct}% "
-                      f"读{mb_read:.0f}MB 写{mb_written:.0f}MB "
-                      f"{mb_read/elapsed:.1f}MB/s",
-                      end="", flush=True)
-
-            # 等所有写入完成
-            for fut in as_completed(futures):
+        def _writer_loop():
+            while True:
+                item = chunk_q.get()
+                if item is None:
+                    break
+                name, data = item
                 try:
-                    fut.result()
+                    fpath = os.path.join(server_dest, name)
+                    os.makedirs(os.path.dirname(fpath), exist_ok=True)
+                    with open(fpath, "wb") as f:
+                        f.write(data)
+                    with lock:
+                        total_written[0] += len(data)
                 except Exception as e:
                     errors.append(str(e))
+                finally:
+                    chunk_q.task_done()
+
+        writers = []
+        for _ in range(WRITE_WORKERS):
+            t = threading.Thread(target=_writer_loop, daemon=True)
+            t.start()
+            writers.append(t)
+
+        for idx, (name, size) in enumerate(file_list):
+            data = _recv_exactly(sock, size)
+            total_read[0] += len(data)
+            chunk_q.put((name, data))
+
+            # 进度
+            elapsed = max(time.time() - total_start, 0.001)
+            mb_read = total_read[0] / (1024 * 1024)
+            mb_written = total_written[0] / (1024 * 1024)
+            pct = int((idx + 1) / len(file_list) * 100)
+            print(f"\r  [{idx+1:3d}/{len(file_list)}] {pct}% "
+                  f"读{mb_read:.0f}MB 写{mb_written:.0f}MB "
+                  f"{mb_read/elapsed:.1f}MB/s",
+                  end="", flush=True)
+
+        # 等写入队列清空
+        chunk_q.join()
+        for _ in writers:
+            chunk_q.put(None)
+        for t in writers:
+            t.join()
 
         total_time = time.time() - total_start
         total_mb = total_read[0] / (1024 * 1024)
