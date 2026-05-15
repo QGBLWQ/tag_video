@@ -467,7 +467,7 @@ def _find_android_nc(adb_exe: str) -> str | None:
     """检测设备上的 nc / busybox nc（验证 applet 真实存在）。"""
     for candidate in ["nc", "busybox nc", "toybox nc",
                       "/data/local/tmp/busybox nc",
-                      "/mnt/nvme/CapturedData/busybox nc"]:
+                      "/mnt/nvme/busybox nc"]:
         try:
             first = candidate.split()[0]
             r = _run([adb_exe, "shell", f"which {first} 2>/dev/null"],
