@@ -5,6 +5,7 @@
 """
 
 from copy import deepcopy
+import json
 import shutil
 from pathlib import Path
 
@@ -135,28 +136,39 @@ class MainWindow(QMainWindow):
         print(f"[WRITE_OUTPUTS] cid={manifest.case_id} local_root={manifest.local_case_root} "
               f"desc={tag_result.scene_description[:30]}")
 
-        # 校验：本地目录名应包含 case_id
-        local_dir = str(manifest.local_case_root)
-        if manifest.case_id not in local_dir:
-            msg = (f"数据异常！manifest.case_id={manifest.case_id} 但 "
-                   f"local_case_root={local_dir} 不包含该 case_id，拒绝写入！")
-            print(f"[WRITE_OUTPUTS] ERROR: {msg}")
-            raise RuntimeError(msg)
-
-        # 校验：对比 AI 缓存中的画面描述，不一致则警告
-        try:
-            from pathlib import Path as _P
-            from video_tagging_assistant.tagging_cache import load_cached_result
-            cache_root = _P(self._config.get("cache_root", "artifacts/cache"))
-            cached = load_cached_result(cache_root, manifest)
-            if cached:
-                expected = cached.get("scene_description", "")
-                if expected and expected != tag_result.scene_description:
+        # 校验：对比 intermediate/{dji_stem}.json 中的画面描述
+        # 每个 DJI 视频有唯一对应的打标结果，不一致说明审错了视频
+        dji_stem = manifest.vs_normal_path.stem
+        intermediate_dir = Path(self._config.get("intermediate_dir", "output/intermediate"))
+        ai_json = intermediate_dir / f"{dji_stem}.json"
+        if ai_json.exists():
+            try:
+                ai_result = json.loads(ai_json.read_text(encoding="utf-8"))
+                ai_desc = (ai_result.get("scene_description", "")
+                           or ai_result.get("画面描述", "")
+                           or ai_result.get("structured_tags", {}).get("画面描述", ""))
+                if ai_desc and ai_desc != tag_result.scene_description:
                     print(f"[WRITE_OUTPUTS] WARNING: cid={manifest.case_id} "
-                          f"desc mismatch! cache='{expected[:30]}' vs "
-                          f"input='{tag_result.scene_description[:30]}'")
-        except Exception:
-            pass  # 缓存不可用时不拦截
+                          f"dji={dji_stem} desc mismatch! "
+                          f"AI='{ai_desc[:50]}' vs input='{tag_result.scene_description[:50]}'")
+            except Exception:
+                pass
+
+        # 清理本地目录中同 case_id 但描述不匹配的旧 txt（避免上传时双 txt）
+        local_dir = manifest.local_case_root
+        if local_dir.exists():
+            for old_txt in local_dir.glob(f"{manifest.case_id}_*.txt"):
+                try:
+                    old_text = old_txt.read_text(encoding="gbk", errors="replace")
+                    for line in old_text.splitlines():
+                        if line.startswith("备注: "):
+                            old_desc = line[4:].strip()
+                            if old_desc != tag_result.scene_description:
+                                print(f"[WRITE_OUTPUTS] cleanup stale txt: {old_txt.name}")
+                                old_txt.unlink()
+                            break
+                except Exception:
+                    pass
 
         if self._workbook_path.exists():
             try:
@@ -176,10 +188,39 @@ class MainWindow(QMainWindow):
         """在全自动模式下，把刚写出的 txt 补传到服务器 case 目录。
 
         txt 可能比 rkraw 先到服务器，此时负责创建目录。
+        上传前校验 txt 备注与 intermediate/{dji_stem}.json 的画面描述一致。
         """
         server_case_dir = Path(manifest.server_case_dir)
         if not isinstance(txt_path, Path) or not txt_path.exists():
             return
+
+        # 校验 txt 内容与 AI 打标结果一致
+        dji_stem = manifest.vs_normal_path.stem
+        intermediate_dir = Path(self._config.get("intermediate_dir", "output/intermediate"))
+        ai_json = intermediate_dir / f"{dji_stem}.json"
+        if ai_json.exists():
+            try:
+                ai_result = json.loads(ai_json.read_text(encoding="utf-8"))
+                ai_desc = (ai_result.get("scene_description", "")
+                           or ai_result.get("画面描述", "")
+                           or ai_result.get("structured_tags", {}).get("画面描述", ""))
+                txt_text = txt_path.read_text(encoding="gbk", errors="replace")
+                txt_desc = ""
+                for line in txt_text.splitlines():
+                    if line.startswith("备注: "):
+                        txt_desc = line[4:].strip()
+                        break
+                if ai_desc and txt_desc != ai_desc:
+                    print(f"[SYNC_TXT] ERROR: cid={manifest.case_id} dji={dji_stem} "
+                          f"txt desc mismatch! AI='{ai_desc[:50]}' vs txt='{txt_desc[:50]}'")
+                    raise RuntimeError(
+                        f"txt 校验失败：{manifest.case_id} 的备注与 "
+                        f"{dji_stem}.json 的画面描述不一致，拒绝上传"
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass  # JSON 不可用时不拦截
 
         dest = server_case_dir / txt_path.name
         print(f"[SYNC_TXT] src={txt_path} -> dest={dest}")
