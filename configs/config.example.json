@@ -1,25 +1,15 @@
 {
   "workbook_path": "C:/Users/<你的用户名>/Desktop/work！/PC_A_采集记录表v2.1.xlsm",
-  "dji_nomal_dir": "E:/DV/采集建档V2.1/Dji_mp4/Nomal",
-  "dji_night_dir": "E:/DV/采集建档V2.1/Dji_mp4/Night",
+  "dji_nomal_dir": "C:/Users/<用户名>/Desktop/work！/videos/normal",
+  "dji_night_dir": "C:/Users/<用户名>/Desktop/work！/videos/night",
   "intermediate_dir": "output/intermediate",
   "potplayer_exe": "C:/Program Files/DAUM/PotPlayer/PotPlayerMini64.exe",
   "adb_exe": "adb.exe",
-  "ffprobe_exe": "ffprobe.exe",
-  "ffmpeg_exe": "ffmpeg.exe",
   "dut_root": "/mnt/nvme/CapturedData",
-  "temp_path": "E:/DV/temp_pull_cache",
-  "alignment_preview_frame_count": 30,
-  "alignment_preview_skip_frames": 2,
-  "alignment_preview_duration": 10,
-  "alignment_preview_workers": 2,
   "local_case_root": "E:/DV/采集建档V2.1",
   "server_upload_root": "\\\\<服务器IP>\\<共享目录>",
   "mode": "OV50H40_Action5Pro_DCG HDR",
   "upload_workers": 8,
-  "pull_workers": 2,
-  "alignment_preload_cases": 10,
-  "adb_pull_timeout": 600,
   "pc_id": "A",
   "input_dir": "videos",
   "output_dir": "output",
@@ -48,13 +38,13 @@
     "scene_description_instruction": "画面描述应从真正进入测试场景之后开始，可以更详细，重点描述光亮变化、场景细节、主体运动和画面变化。",
     "single_choice_fields": {
       "安装方式": ["手持", "穿戴", "载具"],
-      "运动模式": ["行走", "跑步", "登山", "骑行", "机动车", "车辆", "滑行", "飞行", "船舶", "潜水", "冲浪"],
-      "运镜方式": ["推U摇", "拉U摇", "移U跟", "升U俯拍", "环绕U推or拉", "用镜头", "推/拉U升/降", "希区柯克变"],
+      "运动模式": ["行走", "跑步", "登山", "骑行", "电摩", "汽车", "滑行", "飞行", "船舶", "潜水", "冲浪"],
+      "运镜方式": ["推U摇", "拉U摇", "移U跟", "升U俯拍", "环绕U推or拉", "用镜头", "推/拉U升/降", "希区柯克变焦"],
       "光源": ["低", "正常", "强", "大光比", "亮度突变", "多种光源", "色温交织", "雨天", "雾天", "极端天气"]
     },
     "multi_choice_fields": {
       "画面特征": ["纹理 高低频", "重复纹理", "边缘特征 强弱", "运动对焦", "人物肤色", "景深远近切换", "反射与透视"],
-      "影像表达": ["风景录像", "建筑空间", "美食游街", "运动跟拍", "主题拍摄", "赛事舞台", "多目标分散运", "交互叙事"]
+      "影像表达": ["风景录像", "建筑空间", "美食游街", "运动跟拍", "主题拍摄", "赛事舞台", "多目标分散", "自拍他拍"]
     }
   },
   "concurrency": {
