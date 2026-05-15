@@ -491,6 +491,35 @@ def _find_android_nc(adb_exe: str) -> str | None:
     return None
 
 
+def _ensure_android_nc(adb_exe: str, progress_cb=None) -> str | None:
+    """确保设备上有 nc：先检测，没有则自动推送 busybox-arm64 安装。"""
+    nc = _find_android_nc(adb_exe)
+    if nc:
+        return nc
+
+    # 设备无 nc → 尝试从项目 tools/ 目录推送 busybox-arm64
+    busybox_local = Path(__file__).resolve().parent.parent / "tools" / "busybox-arm64"
+    if not busybox_local.exists():
+        return None
+
+    if progress_cb:
+        progress_cb(0, 100, "设备缺少 nc，正在自动安装…")
+
+    try:
+        _run([adb_exe, "push", str(busybox_local), "/mnt/nvme/busybox"],
+             capture_output=True, timeout=30, check=True)
+        _run([adb_exe, "shell", "chmod +x /mnt/nvme/busybox"],
+             capture_output=True, timeout=10, check=True)
+    except Exception:
+        return None
+
+    if progress_cb:
+        progress_cb(50, 100, "安装完成，验证 nc…")
+
+    # 重新检测（/mnt/nvme/busybox nc 会被 _find_android_nc 找到）
+    return _find_android_nc(adb_exe)
+
+
 def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
                   progress_cb, remote_files: dict) -> bool:
     """adb forward + 设备侧 cat | nc 原始流直写目标目录。
@@ -523,7 +552,7 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
     except Exception:
         pass
 
-    android_nc = _find_android_nc(adb_exe)
+    android_nc = _ensure_android_nc(adb_exe, progress_cb)
     if not android_nc:
         _dbg("no nc, bail")
         if progress_cb:
