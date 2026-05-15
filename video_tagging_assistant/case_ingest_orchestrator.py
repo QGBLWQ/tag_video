@@ -432,7 +432,7 @@ def _pull_via_tar(adb_exe: str, remote_dir: str, dest: str, timeout: int,
 # ═══════════════════════════════════════════════════════════
 
 _PORT_LOCK = threading.Lock()
-_NEXT_PORT = [5555]
+_NEXT_PORT = [5556]  # 5555 被 adbd 永久占用
 
 
 def _alloc_forward_port(adb_exe: str) -> int:
@@ -458,7 +458,7 @@ def _alloc_forward_port(adb_exe: str) -> int:
             port += 1
         _NEXT_PORT[0] = port + 1
         if _NEXT_PORT[0] > 5655:
-            _NEXT_PORT[0] = 5555
+            _NEXT_PORT[0] = 5556
         return port
 
 
@@ -585,6 +585,21 @@ def _pull_via_tcp(adb_exe: str, remote_dir: str, dest: str, timeout: int,
             _run([adb_exe, "forward", "--remove", f"tcp:{port}"],
                  capture_output=True, timeout=5)
             port = _alloc_forward_port(adb_exe)
+            _list_path = f"/mnt/nvme/_pull_list_{port}.txt"
+            # 为新端口重新推送文件列表
+            try:
+                _run([adb_exe, "shell", f"cat > {_list_path}"],
+                     input=_list, capture_output=True, text=True, timeout=10, check=True)
+            except Exception:
+                _dbg(f"retry: push file list FAILED for port {port}")
+                continue
+            # 为新端口重新建立 forward
+            try:
+                _run([adb_exe, "forward", f"tcp:{port}", f"tcp:{port}"],
+                     capture_output=True, timeout=10, check=True)
+            except Exception as fe:
+                _dbg(f"retry: forward FAILED for port {port}: {fe}")
+                continue
             shell_cmd = (
                 f"cd '{remote_dir}' && "
                 f"{_bb} xargs -n 50 cat < {_list_path} "
