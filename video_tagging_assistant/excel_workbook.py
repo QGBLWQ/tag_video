@@ -515,7 +515,6 @@ def load_get_list_manifests(
                 labels={},
             )
         )
-        sequence += 1
     return manifests, message
 
 
