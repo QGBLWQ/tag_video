@@ -392,8 +392,28 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("alignment is no longer ready", 0)
             return
 
+        # ── Step 1: 检查目录下是否已有 txt ──
+        local_dir = manifest.local_case_root
+        existing_txts = list(local_dir.glob("*.txt")) if local_dir.exists() else []
+        if existing_txts:
+            txt_names = "\n".join(f"  · {p.name}" for p in existing_txts)
+            reply = QMessageBox.question(
+                self, "txt 已存在",
+                f"{manifest.case_id} 目录下已有 txt:\n{txt_names}\n\n是否覆盖？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                self._review_tab.advance_after_approval()
+                self.statusBar().showMessage(f"已跳过 {manifest.case_id}", 3000)
+                return
+
+        # ── Step 2: 检测设备标号是否变更（在写入之前记录旧值） ──
+        old_device_label = manifest.device_label
+        old_server_case_dir = str(manifest.server_case_dir)
         if not self._auto_execution_enabled:
             self._apply_device_info_to_manifest(manifest, tag_result.device_info)
+        new_device_label = manifest.device_label
 
         try:
             txt_path = self._write_review_outputs(manifest, tag_result)
@@ -408,8 +428,43 @@ class MainWindow(QMainWindow):
         self._approved_case_ids.add(manifest.case_id)
         self._review_tab.advance_after_approval()
 
-        # 非自动模式：审核通过后入队执行；自动模式已在 _maybe_enter_review 入队
-        if not self._auto_execution_enabled and manifest.case_id not in self._enqueued_case_ids:
+        # ── Step 3: 已在队列的 case，决定是否重新执行 ──
+        if self._auto_execution_enabled:
+            return  # 自动模式已在 _maybe_enter_review 入队
+
+        if manifest.case_id in self._enqueued_case_ids:
+            if old_device_label != new_device_label:
+                reply = QMessageBox.question(
+                    self, "设备标号变更",
+                    f"{manifest.case_id} 设备标号变更: "
+                    f"{old_device_label or '(空)'} → {new_device_label or '(空)'}\n"
+                    f"将撤销原执行计划，清理服务器旧文件并重新拉取 RK、重新上传。",
+                    QMessageBox.Ok | QMessageBox.Cancel,
+                    QMessageBox.Ok,
+                )
+                if reply == QMessageBox.Ok:
+                    self._worker.cancel_case(manifest.case_id,
+                                             old_server_case_dir)
+                    self._enqueued_case_ids.discard(manifest.case_id)
+                else:
+                    return
+            else:
+                reply = QMessageBox.question(
+                    self, "重新上传",
+                    f"{manifest.case_id} 已在执行队列，xlsm/txt 已更新。\n"
+                    f"是否撤销当前计划并重新拉取 RK、重新上传？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    self._worker.cancel_case(manifest.case_id,
+                                             str(manifest.server_case_dir))
+                    self._enqueued_case_ids.discard(manifest.case_id)
+                else:
+                    return
+
+        # 入队执行
+        if manifest.case_id not in self._enqueued_case_ids:
             self._tabs.setTabEnabled(3, True)
             self._execution_tab.add_case(deepcopy(manifest))
             self._enqueued_case_ids.add(manifest.case_id)

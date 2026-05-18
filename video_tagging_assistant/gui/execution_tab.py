@@ -127,6 +127,12 @@ class ExecutionTab(QWidget):
                 self._remove_upload_bar(case_id)
             else:
                 item.setText(f"[ ] {case_id}  {step} 完成，等待下一步")
+        elif status == "cancelled":
+            item.setText(f"[-] {case_id}  已撤销")
+            if step == "pull":
+                self._remove_pull_bar(case_id)
+            elif step == "upload":
+                self._remove_upload_bar(case_id)
         elif status == "failed":
             item.setText(f"[x] {case_id}  失败: {step} - {message}")
             self._add_retry_button(case_id)

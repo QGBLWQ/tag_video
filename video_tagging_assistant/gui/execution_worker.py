@@ -31,10 +31,26 @@ class ExecutionWorker(QThread):
         self._queue: queue.Queue = queue.Queue()
         self._upload_queue: queue.Queue = queue.Queue()
         self._abort = threading.Event()
+        self._cancelled_case_ids: set = set()
 
     def enqueue(self, manifest: CaseManifest) -> None:
         """把一个 case 加入执行队列。"""
+        self._cancelled_case_ids.discard(manifest.case_id)
         self._queue.put(manifest)
+
+    def cancel_case(self, case_id: str, server_dir: str = "") -> None:
+        """撤销指定 case，跳过后续 pull/move/upload 并清理服务器残留。"""
+        self._cancelled_case_ids.add(case_id)
+        # 清理服务器上已上传的部分文件
+        if server_dir:
+            from video_tagging_assistant.case_ingest_orchestrator import _server_reachable
+            try:
+                server_path = Path(str(server_dir))
+                if _server_reachable(str(server_path)):
+                    import shutil
+                    shutil.rmtree(str(server_path), ignore_errors=True)
+            except Exception:
+                pass
 
     def stop(self) -> None:
         """请求主循环在处理完当前 case 后退出。"""
@@ -96,6 +112,9 @@ class ExecutionWorker(QThread):
                     break
 
                 manifest = item
+                if manifest.case_id in self._cancelled_case_ids:
+                    self.status_changed.emit(manifest.case_id, "pull", "cancelled", "已撤销")
+                    continue
                 self.status_changed.emit(manifest.case_id, "pull", "started", "")
                 server_dest = self._build_server_dest(manifest)
                 f = pull_pool.submit(pull_case, manifest, self._config,
@@ -142,6 +161,10 @@ class ExecutionWorker(QThread):
                 self.status_changed.emit(manifest.case_id, "pull", "completed", "")
             except Exception as exc:
                 self.status_changed.emit(manifest.case_id, "pull", "failed", str(exc))
+                continue
+
+            if manifest.case_id in self._cancelled_case_ids:
+                self.status_changed.emit(manifest.case_id, "move", "cancelled", "已撤销")
                 continue
 
             # move 必须串行（同一本地目录操作）
@@ -192,6 +215,8 @@ class ExecutionWorker(QThread):
                 if item is _SENTINEL:
                     break
                 manifest = item
+                if manifest.case_id in self._cancelled_case_ids:
+                    continue
                 f = upload_pool.submit(_do_upload, manifest)
                 pending_uploads[f] = manifest
                 # 清理已完成的
