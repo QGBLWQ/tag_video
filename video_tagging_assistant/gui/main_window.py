@@ -409,11 +409,11 @@ class MainWindow(QMainWindow):
                 return
 
         # ── Step 2: 检测设备标号是否变更（在写入之前记录旧值） ──
-        old_device_label = manifest.device_label
+        old_device_label = getattr(manifest, "device_label", "")
         old_server_case_dir = str(manifest.server_case_dir)
         if not self._auto_execution_enabled:
             self._apply_device_info_to_manifest(manifest, tag_result.device_info)
-        new_device_label = manifest.device_label
+        new_device_label = getattr(manifest, "device_label", "")
 
         try:
             txt_path = self._write_review_outputs(manifest, tag_result)
