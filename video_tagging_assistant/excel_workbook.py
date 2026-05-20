@@ -470,7 +470,11 @@ def load_get_list_manifests(
     manifests: List[CaseManifest] = []
     sequence = starting_sequence
     dji_index = 0
-    for row_index in range(3, sheet.max_row + 1):
+    max_row = sheet.max_row
+    if not has_stored:
+        # 新批次：以 DJI 文件数为准，sheet 行数不够时自动扩展
+        max_row = max(max_row, 2 + len(normal_files))
+    for row_index in range(3, max_row + 1):
         status = str(sheet.cell(row_index, headers.get("处理状态", 0)).value or "").strip()
         if status == "R":
             continue
@@ -489,6 +493,8 @@ def load_get_list_manifests(
             dji_index += 1
 
         if not rk_raw and normal == Path(".") and night == Path("."):
+            if not has_stored:
+                dji_index -= 1  # 空行不消耗 DJI 文件位次
             continue
 
         # 若该 DJI 之前已审批过，复用原 case_id；否则用新序号
